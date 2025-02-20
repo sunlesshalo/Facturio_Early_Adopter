@@ -54,7 +54,6 @@
   <div id="flash-messages"></div>
 
   <!-- SmartBill Credentials Form -->
-  <!-- This form collects the SmartBill username (email), token, and company tax code (CIF) -->
   <form id="smartbill-form">
     <p>
       <label for="smartbill_email">Nume de utilizator SmartBill (email):</label><br>
@@ -69,7 +68,6 @@
       <input type="text" id="cif" name="cif" required size="40">
     </p>
     <p>
-      <!-- Button to submit the SmartBill form -->
       <button type="submit" id="connect-smartbill-btn">Conectare la SmartBill</button>
     </p>
   </form>
@@ -77,7 +75,6 @@
   <!-- Stripe API Key Section (hidden until SmartBill is connected) -->
   <div id="stripe-section" class="hidden">
     <h2>Conectare Stripe</h2>
-    <!-- Form for entering the Stripe Restricted API Key -->
     <form id="stripe-form">
       <p>
         <label for="stripe_key">Stripe Restricted API Key:</label><br>
@@ -87,7 +84,6 @@
         <button type="submit">Conectare la Stripe</button>
       </p>
     </form>
-    <!-- "Continuare" button that appears after a successful Stripe connection -->
     <button id="continue-btn" class="hidden">Continuare</button>
   </div>
 
@@ -100,54 +96,50 @@
         <select id="modal_default_series" name="modal_default_series" required></select>
       </p>
       <p>
-        <!-- Button to confirm the selection -->
         <button id="modal-confirm-btn">Salvează seria implicită</button>
-        <!-- Button to cancel the modal popup -->
         <button id="modal-cancel-btn">Renunță</button>
       </p>
     </div>
   </div>
 
   <script>
-    // Function to display flash messages at the top of the page.
+    // Function to display flash messages.
     function flashMessage(msg) {
       const flashDiv = document.getElementById("flash-messages");
       flashDiv.innerHTML = `<p style="color: green;">${msg}</p>`;
     }
 
-    // Function to disable all fields and buttons in the SmartBill form.
+    // Disable SmartBill form fields.
     function disableSmartbillForm() {
       const form = document.getElementById("smartbill-form");
       const elements = form.querySelectorAll("input, button");
       elements.forEach(el => el.disabled = true);
     }
 
-    // Function to show the Stripe section (making it visible).
+    // Show Stripe section.
     function showStripeSection() {
       document.getElementById("stripe-section").classList.remove("hidden");
     }
 
-    // Function to show the "Continuare" button.
+    // Show "Continuare" button.
     function showContinueButton() {
       document.getElementById("continue-btn").classList.remove("hidden");
     }
 
-    // When the "Continuare" button is clicked, redirect the user to the dashboard page.
+    // Redirect on "Continuare" click.
     document.getElementById("continue-btn").addEventListener("click", function() {
       window.location.href = "/dashboard";
     });
 
-    // Handle submission of the SmartBill credentials form.
+    // Handle SmartBill form submission.
     document.getElementById("smartbill-form").addEventListener("submit", function(e) {
-      e.preventDefault();  // Prevent the page from refreshing
+      e.preventDefault();
       if (document.getElementById("connect-smartbill-btn").disabled) return;
 
-      // Get the values entered by the user.
       const smartbill_email = document.getElementById("smartbill_email").value.trim();
       const smartbill_token = document.getElementById("smartbill_token").value.trim();
       const cif = document.getElementById("cif").value.trim();
 
-      // Send the SmartBill credentials to the backend via an AJAX POST request.
       fetch("/api/get_series", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -155,44 +147,37 @@
       })
       .then(response => response.json())
       .then(data => {
-        // If an error occurs, display the error message.
         if (data.status !== "success") {
           flashMessage(data.message);
           return;
         }
         const seriesList = data.series_list;
         if (seriesList.length === 1) {
-          // If only one series is returned:
           const seriesName = seriesList[0].name || seriesList[0];
-          // Send a request to save the default series along with the CIF (so that the user record is created).
           fetch("/api/set_default_series", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ smartbill_email, default_series: seriesName, cif })
+            body: JSON.stringify({ smartbill_email, smartbill_token, default_series: seriesName, cif })
           })
           .then(res => res.json())
           .then(resp => {
             if (resp.status === "success") {
               flashMessage("Conectat la SmartBill cu success: " + seriesName);
-              // Disable the SmartBill form fields so they cannot be changed.
               disableSmartbillForm();
-              // Reveal the Stripe section.
               showStripeSection();
             } else {
               flashMessage("Eroare la salvarea seriei implicite.");
             }
           });
         } else {
-          // If multiple series are returned, show the modal popup.
           const modalSelect = document.getElementById("modal_default_series");
-          modalSelect.innerHTML = "";  // Clear any existing options
+          modalSelect.innerHTML = "";
           seriesList.forEach(series => {
             const option = document.createElement("option");
             option.value = (series.name ? series.name : series);
             option.text = (series.name ? series.name : series);
             modalSelect.appendChild(option);
           });
-          // Display the modal popup.
           document.getElementById("series-modal").style.display = "flex";
         }
       })
@@ -202,30 +187,34 @@
       });
     });
 
-    // Handle modal confirmation (when the user selects a series from the popup).
+    // Handle modal confirmation.
     document.getElementById("modal-confirm-btn").onclick = function() {
+      console.log("Modal confirm clicked.");
       const smartbill_email = document.getElementById("smartbill_email").value.trim();
+      const smartbill_token = document.getElementById("smartbill_token").value.trim();
       const default_series = document.getElementById("modal_default_series").value;
-      const cif = document.getElementById("cif").value.trim(); // Retrieve the CIF from the disabled field
-      // Send the selected default series along with the CIF to the backend.
+      const cif = document.getElementById("cif").value.trim();
       fetch("/api/set_default_series", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ smartbill_email, default_series, cif })
+        body: JSON.stringify({ smartbill_email, smartbill_token, default_series, cif })
       })
       .then(res => res.json())
       .then(resp => {
+        console.log("Set default series response:", resp);
+        document.getElementById("series-modal").style.display = "none";
         if (resp.status === "success") {
           flashMessage("Conectat la SmartBill cu success: " + default_series);
-          // Hide the modal popup.
-          document.getElementById("series-modal").style.display = "none";
-          // Disable the SmartBill form so that fields cannot be changed.
           disableSmartbillForm();
-          // Reveal the Stripe section.
           showStripeSection();
         } else {
           flashMessage("Eroare la salvarea seriei implicite.");
         }
+      })
+      .catch(error => {
+        console.error("Error setting default series:", error);
+        document.getElementById("series-modal").style.display = "none";
+        flashMessage("Eroare de conexiune.");
       });
     };
 
@@ -235,15 +224,14 @@
       flashMessage("Selectia seriei a fost anulată.");
     };
 
-    // Handle submission of the Stripe form.
+    // Handle Stripe form submission.
     document.getElementById("stripe-form").addEventListener("submit", function(e) {
-      e.preventDefault();  // Prevent page refresh
+      e.preventDefault();
       const stripe_key = document.getElementById("stripe_key").value.trim();
       if (!stripe_key) {
         flashMessage("Please provide the Stripe key.");
         return;
       }
-      // Send the Stripe key to the backend to create the webhook.
       fetch("/api/stripe_create_webhook", {
         method: "POST",
         headers: {"Content-Type": "application/json"},
@@ -252,7 +240,6 @@
       .then(response => response.json())
       .then(data => {
         if (data.status === "success") {
-          // If the webhook is created successfully, display the success message and show the "Continuare" button.
           flashMessage("Stripe conectat cu success! Webhook creat: " + data.webhook.id);
           showContinueButton();
         } else {

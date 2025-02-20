@@ -1,4 +1,3 @@
-# app.py
 """
 Consolidated Facturio Application
 -----------------------------------
@@ -32,7 +31,7 @@ from config import config_defaults
 # Configuration and Global Constants
 # ----------------------------------------------------------------------
 # All static configuration values now come from config_defaults.
-# INSTANCE_URL is still taken from environment
+# INSTANCE_URL is still taken from environment.
 INSTANCE_URL = os.environ.get("INSTANCE_URL", "https://your-instance-url")
 
 # ----------------------------------------------------------------------
@@ -178,10 +177,11 @@ def api_set_default_series():
       - smartbill_token: SmartBill API token
       - cif: Company tax code (used for login and as companyVatCode)
       - default_series: Chosen invoice series
-      - stripe_api_key: Stripe API key
-      - stripe_webhook_secret: Stripe webhook secret
-      - app_secret_key: App secret key to be generated and stored
-    Saves all these values into a unified user record.
+    Optional fields:
+      - stripe_api_key
+      - stripe_webhook_secret
+      - app_secret_key
+    Saves these values into a unified user record.
     """
     data = request.get_json()
     smartbill_email = data.get("smartbill_email", "").strip()
@@ -192,18 +192,25 @@ def api_set_default_series():
     stripe_webhook_secret = data.get("stripe_webhook_secret", "").strip()
     app_secret_key = data.get("app_secret_key", "").strip()
 
-    if not (smartbill_email and smartbill_token and cif and default_series and stripe_api_key and stripe_webhook_secret and app_secret_key):
-        return jsonify({"status": "error", "message": "Missing one or more required fields"}), 400
+    # Require only the SmartBill-related fields.
+    if not (smartbill_email and smartbill_token and cif and default_series):
+        return jsonify({"status": "error", "message": "Missing one or more required SmartBill fields"}), 400
 
+    # Build the user record using the provided SmartBill values.
     user_record = {
         "smartbill_email": smartbill_email,
         "smartbill_token": smartbill_token,
-        "company_tax_code": cif,         # Used for login and as companyVatCode
+        "company_tax_code": cif,  # Used for login and as companyVatCode
         "default_series": default_series,
-        "stripe_api_key": stripe_api_key,
-        "stripe_webhook_secret": stripe_webhook_secret,
-        "app_secret_key": app_secret_key
     }
+
+    # Include Stripe-related fields if provided.
+    if stripe_api_key:
+        user_record["stripe_api_key"] = stripe_api_key
+    if stripe_webhook_secret:
+        user_record["stripe_webhook_secret"] = stripe_webhook_secret
+    if app_secret_key:
+        user_record["app_secret_key"] = app_secret_key
 
     db["user_record"] = json.dumps(user_record)
     logger.info("User record created: %s", user_record)
@@ -213,14 +220,24 @@ def api_set_default_series():
 @app.route("/api/stripe_create_webhook", methods=["POST"])
 def api_stripe_create_webhook():
     """
-    Creates a new Stripe webhook endpoint using the stored Stripe API key.
+    Creates a new Stripe webhook endpoint using the provided Stripe API key.
     The webhook URL is built from INSTANCE_URL.
+    This endpoint updates the unified user record with the Stripe API key and webhook secret.
     """
+    data = request.get_json()
+    provided_stripe_key = data.get("stripe_key", "").strip()
+    if not provided_stripe_key:
+        return jsonify({"status": "error", "message": "Stripe key is required"}), 400
+
     user_record = get_user_record()
     if not user_record:
         logger.error("User record not found. Cannot create Stripe webhook.")
         return jsonify({"status": "error", "message": "Onboarding incomplete"}), 400
 
+    # Update the user record with the Stripe API key if it's missing.
+    if not user_record.get("stripe_api_key"):
+        user_record["stripe_api_key"] = provided_stripe_key
+        db["user_record"] = json.dumps(user_record)
     stripe_api_key = user_record.get("stripe_api_key")
     if not stripe_api_key:
         return jsonify({"status": "error", "message": "Stripe API key missing"}), 400
@@ -230,7 +247,7 @@ def api_stripe_create_webhook():
         logger.error("INSTANCE_URL not set.")
         return jsonify({"status": "error", "message": "INSTANCE_URL not set"}), 500
 
-    webhook_url = f"{instance_url}/stripe-webhook"
+    webhook_url = f"{instance_url}stripe-webhook"
     logger.debug("Using webhook URL: %s", webhook_url)
 
     stripe.api_key = stripe_api_key
@@ -244,12 +261,18 @@ def api_stripe_create_webhook():
             "id": webhook.get("id"),
             "secret": webhook.get("secret")
         }
+        # Store webhook data separately.
         db["stripe_webhook"] = json.dumps(webhook_data)
+        # ALSO update the user record with the webhook secret.
+        user_record["stripe_webhook_secret"] = webhook_data.get("secret")
+        db["user_record"] = json.dumps(user_record)
         logger.info("Stripe webhook created and stored: %s", webhook_data)
         return jsonify({"status": "success", "webhook": webhook_data}), 200
     except Exception as e:
         logger.error("Stripe webhook creation error: %s", e)
         return jsonify({"status": "error", "message": str(e)}), 500
+
+
 
 # ----------------------------------------------------------------------
 # Authentication, Dashboard, and Account Management Endpoints
@@ -344,13 +367,13 @@ def status():
 # Facturio Integration Endpoint (Stripe Webhook)
 # ----------------------------------------------------------------------
 # The following helper functions are assumed to be defined in their respective modules:
-# - build_payload (from utils)
-# - create_smartbill_invoice, delete_smartbill_invoice (from smartbill)
-# - is_event_processed, mark_event_processed, remove_event (from idempotency)
-# - notify_admin (from notifications)
-# - send_invoice_email (from email_sender)
+# - build_payload (from services.utils)
+# - create_smartbill_invoice, delete_smartbill_invoice (from services.smartbill)
+# - is_event_processed, mark_event_processed, remove_event (from services.idempotency)
+# - notify_admin (from services.notifications)
+# - send_invoice_email (from services.email_sender)
 from services.utils import build_payload
-from services.smartbill import create_smartbill_invoice, delete_smartbill_invoice
+from services.smartbill import create_smartbill_invoice
 from services.idempotency import is_event_processed, mark_event_processed, remove_event
 from services.notifications import notify_admin
 from services.email_sender import send_invoice_email
@@ -405,11 +428,10 @@ def stripe_webhook():
             merged_config = {**config_defaults, **dynamic_config}
             final_payload = build_payload(session_obj, merged_config)
             logger.info("Final payload built: %s", json.dumps(final_payload, indent=2))
-            invoice_response = create_smartbill_invoice(final_payload)
+            invoice_response = create_smartbill_invoice(final_payload, merged_config)
             logger.info("SmartBill Invoice Response: %s", json.dumps(invoice_response, indent=2))
 
             # Email functionality is disabled.
-            # The email payload construction and sending are commented out:
             """
             email_payload = {
                 "companyVatCode": dynamic_config["companyVatCode"],
@@ -433,8 +455,6 @@ def stripe_webhook():
                 logger.error("Failed to send invoice email: %s", email_err)
                 notify_admin(email_err)
             """
-
-            # Removed TEST_MODE handling block as it is no longer used.
         else:
             logger.info("Unhandled event type: %s", event.get("type"))
     except Exception as e:

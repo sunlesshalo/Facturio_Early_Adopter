@@ -33,12 +33,12 @@ def remove_empty_values(data):
 def build_payload(stripe_data, config):
     """
     Constructs the final invoice payload for SmartBill.
-    Payment details are always included.
+    Payment details are omitted for now.
     """
     client = extract_client_details(stripe_data)
     client_address = client.get('address', {})
 
-    # Retrieve the dynamic smartbill email from config.
+    # Retrieve the dynamic SmartBill email from config.
     smartbill_email = config.get("SMARTBILL_USERNAME") or config.get("smartbill_email")
     if not smartbill_email:
         raise ValueError("SmartBill email not provided in the configuration.")
@@ -93,13 +93,15 @@ def build_payload(stripe_data, config):
         "products": [product],
     }
 
-    payload["payment"] = {
-        "value": stripe_data.get('amount_total', 0) / 100,
-        "paymentSeries": "",
-        "type": "Card",
-        "isCash": False
-    }
+    # Payment section is currently commented out as requested.
+    # payload["payment"] = {
+    #     "value": stripe_data.get('amount_total', 0) / 100,
+    #     "paymentSeries": "",
+    #     "type": "Card",
+    #     "isCash": False
+    # }
 
-    payload = remove_empty_values(payload)
     logger.debug("Built payload: %s", payload)
     return payload
+
+
