@@ -72,13 +72,17 @@
     </p>
   </form>
 
-  <!-- Stripe API Key Section (hidden until SmartBill is connected) -->
+  <!-- Stripe API Keys Section (hidden until SmartBill is connected) -->
   <div id="stripe-section" class="hidden">
     <h2>Conectare Stripe</h2>
     <form id="stripe-form">
       <p>
-        <label for="stripe_key">Stripe Restricted API Key:</label><br>
-        <input type="text" id="stripe_key" name="stripe_key" required size="40">
+        <label for="stripe_test_key">Test Stripe API Key:</label><br>
+        <input type="text" id="stripe_test_key" name="stripe_test_key" required size="40">
+      </p>
+      <p>
+        <label for="stripe_live_key">Live Stripe API Key:</label><br>
+        <input type="text" id="stripe_live_key" name="stripe_live_key" required size="40">
       </p>
       <p>
         <button type="submit">Conectare la Stripe</button>
@@ -189,7 +193,6 @@
 
     // Handle modal confirmation.
     document.getElementById("modal-confirm-btn").onclick = function() {
-      console.log("Modal confirm clicked.");
       const smartbill_email = document.getElementById("smartbill_email").value.trim();
       const smartbill_token = document.getElementById("smartbill_token").value.trim();
       const default_series = document.getElementById("modal_default_series").value;
@@ -201,7 +204,6 @@
       })
       .then(res => res.json())
       .then(resp => {
-        console.log("Set default series response:", resp);
         document.getElementById("series-modal").style.display = "none";
         if (resp.status === "success") {
           flashMessage("Conectat la SmartBill cu success: " + default_series);
@@ -227,23 +229,24 @@
     // Handle Stripe form submission.
     document.getElementById("stripe-form").addEventListener("submit", function(e) {
       e.preventDefault();
-      const stripe_key = document.getElementById("stripe_key").value.trim();
-      if (!stripe_key) {
-        flashMessage("Please provide the Stripe key.");
+      const stripe_test_key = document.getElementById("stripe_test_key").value.trim();
+      const stripe_live_key = document.getElementById("stripe_live_key").value.trim();
+      if (!stripe_test_key || !stripe_live_key) {
+        flashMessage("Please provide both Test and Live Stripe API keys.");
         return;
       }
-      fetch("/api/stripe_create_webhook", {
+      fetch("/api/stripe_create_webhooks", {
         method: "POST",
         headers: {"Content-Type": "application/json"},
-        body: JSON.stringify({ stripe_key })
+        body: JSON.stringify({ stripe_test_key, stripe_live_key })
       })
       .then(response => response.json())
       .then(data => {
         if (data.status === "success") {
-          flashMessage("Stripe conectat cu success! Webhook creat: " + data.webhook.id);
+          flashMessage("Stripe conectat cu success! " + data.message);
           showContinueButton();
         } else {
-          flashMessage("Eroare la crearea webhook-ului Stripe: " + data.message);
+          flashMessage("Eroare la crearea webhook-urilor Stripe: " + data.message);
         }
       })
       .catch(error => {

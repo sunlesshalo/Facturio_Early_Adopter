@@ -7,8 +7,8 @@ It gathers and stores the following user-provided values during onboarding:
   - SmartBill token
   - Company tax code (used as login password and as companyVatCode)
   - Default invoice series
-  - Stripe API key
-  - Stripe webhook secret
+  - Stripe API keys (test and live)
+  - Stripe webhook secrets (created for both keys)
   - App secret key
 
 These values are stored in a unified user record (as JSON under the key "user_record" in Replit DB)
@@ -30,15 +30,13 @@ from config import config_defaults
 # ----------------------------------------------------------------------
 # Configuration and Global Constants
 # ----------------------------------------------------------------------
-# All static configuration values now come from config_defaults.
-# INSTANCE_URL is still taken from environment.
 INSTANCE_URL = os.environ.get("INSTANCE_URL", "https://your-instance-url")
 
 # ----------------------------------------------------------------------
 # Logging Configuration
 # ----------------------------------------------------------------------
 logging.basicConfig(
-    level=logging.DEBUG,  # Log all messages at DEBUG level and higher
+    level=logging.DEBUG,
     format="%(asctime)s [%(levelname)s] %(name)s - %(message)s"
 )
 logger = logging.getLogger(__name__)
@@ -47,20 +45,16 @@ logger = logging.getLogger(__name__)
 # Create Flask App
 # ----------------------------------------------------------------------
 app = Flask(__name__)
-# Initially, we set a temporary secret; it will be updated from the user record after onboarding.
 app.secret_key = "temporary_secret_key"
 
 # Fixed parameters for SmartBill API calls
 SMARTBILL_BASE_URL = "https://ws.smartbill.ro/SBORO/api/"
-SMARTBILL_SERIES_TYPE = "f"  # Default series type
+SMARTBILL_SERIES_TYPE = "f"
 
 # ----------------------------------------------------------------------
 # Helper Functions
 # ----------------------------------------------------------------------
 def get_smartbill_auth_header(username, token):
-    """
-    Constructs the HTTP Basic Authentication header for SmartBill.
-    """
     auth_string = f"{username}:{token}"
     encoded_auth = base64.b64encode(auth_string.encode("utf-8")).decode("utf-8")
     header = {"Authorization": f"Basic {encoded_auth}"}
@@ -68,10 +62,6 @@ def get_smartbill_auth_header(username, token):
     return header
 
 def get_user_record():
-    """
-    Retrieves the unified user record from the database.
-    The record is stored as JSON under the key "user_record".
-    """
     try:
         raw = db.get("user_record")
         if raw:
@@ -87,10 +77,6 @@ def get_user_record():
 # ----------------------------------------------------------------------
 @app.before_request
 def update_secret_key():
-    """
-    If a user record exists and contains an app secret key,
-    update app.secret_key with the stored value.
-    """
     user_record = get_user_record()
     if user_record and user_record.get("app_secret_key"):
         if app.secret_key != user_record.get("app_secret_key"):
@@ -102,12 +88,6 @@ def update_secret_key():
 # ----------------------------------------------------------------------
 @app.route("/", methods=["GET"])
 def index():
-    """
-    Root endpoint:
-      - If no user record exists, renders the onboarding form (index.html).
-      - If a user record exists but the user is not logged in, displays a welcome message.
-      - If the user is logged in, redirects to the dashboard.
-    """
     if not db.get("user_record"):
         return render_template("index.html")
     if session.get("user_email"):
@@ -115,17 +95,43 @@ def index():
     return "Welcome to Facturio's Stripe-SmartBill Integration Service. Please log in at /login."
 
 # ----------------------------------------------------------------------
+# Onboarding Endpoint for HTML Form Submission
+# ----------------------------------------------------------------------
+@app.route("/onboarding", methods=["GET", "POST"])
+def onboarding():
+    if request.method == "POST":
+        smartbill_email = request.form.get("smartbill_email", "").strip()
+        smartbill_token = request.form.get("smartbill_token", "").strip()
+        company_tax_code = request.form.get("company_tax_code", "").strip()
+        default_series = request.form.get("default_series", "").strip()
+        stripe_test_api_key = request.form.get("stripe_test_api_key", "").strip()
+        stripe_live_api_key = request.form.get("stripe_live_api_key", "").strip()
+        password = request.form.get("password", "").strip()
+
+        if not (smartbill_email and smartbill_token and company_tax_code and default_series and stripe_test_api_key and stripe_live_api_key and password):
+            flash("Toate câmpurile sunt obligatorii.")
+            return redirect(url_for("onboarding"))
+
+        user_record = {
+            "smartbill_email": smartbill_email,
+            "smartbill_token": smartbill_token,
+            "company_tax_code": company_tax_code,
+            "default_series": default_series,
+            "stripe_test_api_key": stripe_test_api_key,
+            "stripe_live_api_key": stripe_live_api_key,
+            "app_secret_key": password,
+        }
+        db["user_record"] = json.dumps(user_record)
+        app.secret_key = password
+        flash("Onboarding completat cu succes!")
+        return redirect(url_for("dashboard"))
+    return render_template("index.html")
+
+# ----------------------------------------------------------------------
 # Onboarding API Endpoints
 # ----------------------------------------------------------------------
 @app.route("/api/get_series", methods=["POST"])
 def api_get_series():
-    """
-    Expects a JSON payload with:
-      - smartbill_email: SmartBill email (username)
-      - smartbill_token: SmartBill API token
-      - cif: Company's tax code
-    Calls the SmartBill API to retrieve invoice series.
-    """
     data = request.get_json()
     smartbill_email = data.get("smartbill_email", "").strip()
     smartbill_token = data.get("smartbill_token", "").strip()
@@ -140,17 +146,10 @@ def api_get_series():
     headers.update(get_smartbill_auth_header(smartbill_email, smartbill_token))
     params = {"cif": cif, "type": SMARTBILL_SERIES_TYPE}
 
-    logger.debug("Sending GET request to %s", series_url)
-    logger.debug("Headers: %s", headers)
-    logger.debug("Parameters: %s", params)
-
     try:
         response = requests.get(series_url, headers=headers, params=params)
-        logger.debug("Received response with status code: %s", response.status_code)
-        logger.debug("Response text: %s", response.text)
         response.raise_for_status()
         resp_data = response.json()
-        logger.debug("Parsed JSON: %s", resp_data)
     except requests.exceptions.HTTPError as errh:
         logger.error("HTTP Error: %s", errh)
         return jsonify({"status": "error", "message": f"Eroare HTTP: {errh}"}), response.status_code if response else 500
@@ -162,7 +161,6 @@ def api_get_series():
         return jsonify({"status": "error", "message": "Răspuns invalid din partea SmartBill"}), 500
 
     series_list = resp_data.get("list", [])
-    logger.debug("Extracted series list: %s", series_list)
     if not series_list:
         logger.warning("No invoice series found in response.")
         return jsonify({"status": "error", "message": "Nu s-au găsit serii de facturare."}), 404
@@ -171,18 +169,6 @@ def api_get_series():
 
 @app.route("/api/set_default_series", methods=["POST"])
 def api_set_default_series():
-    """
-    Expects a JSON payload with the following required fields:
-      - smartbill_email: SmartBill email
-      - smartbill_token: SmartBill API token
-      - cif: Company tax code (used for login and as companyVatCode)
-      - default_series: Chosen invoice series
-    Optional fields:
-      - stripe_api_key
-      - stripe_webhook_secret
-      - app_secret_key
-    Saves these values into a unified user record.
-    """
     data = request.get_json()
     smartbill_email = data.get("smartbill_email", "").strip()
     smartbill_token = data.get("smartbill_token", "").strip()
@@ -192,19 +178,16 @@ def api_set_default_series():
     stripe_webhook_secret = data.get("stripe_webhook_secret", "").strip()
     app_secret_key = data.get("app_secret_key", "").strip()
 
-    # Require only the SmartBill-related fields.
     if not (smartbill_email and smartbill_token and cif and default_series):
         return jsonify({"status": "error", "message": "Missing one or more required SmartBill fields"}), 400
 
-    # Build the user record using the provided SmartBill values.
     user_record = {
         "smartbill_email": smartbill_email,
         "smartbill_token": smartbill_token,
-        "company_tax_code": cif,  # Used for login and as companyVatCode
+        "company_tax_code": cif,
         "default_series": default_series,
     }
 
-    # Include Stripe-related fields if provided.
     if stripe_api_key:
         user_record["stripe_api_key"] = stripe_api_key
     if stripe_webhook_secret:
@@ -217,79 +200,101 @@ def api_set_default_series():
 
     return jsonify({"status": "success", "user_record": user_record}), 200
 
-@app.route("/api/stripe_create_webhook", methods=["POST"])
-def api_stripe_create_webhook():
-    """
-    Creates a new Stripe webhook endpoint using the provided Stripe API key.
-    The webhook URL is built from INSTANCE_URL.
-    This endpoint updates the unified user record with the Stripe API key and webhook secret.
-    """
+# New endpoint to create both test and live Stripe webhooks
+@app.route("/api/stripe_create_webhooks", methods=["POST"])
+def api_stripe_create_webhooks():
     data = request.get_json()
-    provided_stripe_key = data.get("stripe_key", "").strip()
-    if not provided_stripe_key:
-        return jsonify({"status": "error", "message": "Stripe key is required"}), 400
+    stripe_test_key = data.get("stripe_test_key", "").strip()
+    stripe_live_key = data.get("stripe_live_key", "").strip()
+    if not stripe_test_key or not stripe_live_key:
+        return jsonify({"status": "error", "message": "Both Stripe API keys are required"}), 400
+
+    if not stripe_test_key.startswith("sk_test"):
+        return jsonify({"status": "error", "message": "Test key must start with sk_test"}), 400
+    # Updated condition to accept live keys that start with "sk_live" or "rk_live"
+    if not (stripe_live_key.startswith("sk_live") or stripe_live_key.startswith("rk_live")):
+        return jsonify({"status": "error", "message": "Live key must start with sk_live or rk_live"}), 400
 
     user_record = get_user_record()
     if not user_record:
-        logger.error("User record not found. Cannot create Stripe webhook.")
+        logger.error("User record not found. Cannot create Stripe webhooks.")
         return jsonify({"status": "error", "message": "Onboarding incomplete"}), 400
 
-    # Update the user record with the Stripe API key if it's missing.
-    if not user_record.get("stripe_api_key"):
-        user_record["stripe_api_key"] = provided_stripe_key
-        db["user_record"] = json.dumps(user_record)
-    stripe_api_key = user_record.get("stripe_api_key")
-    if not stripe_api_key:
-        return jsonify({"status": "error", "message": "Stripe API key missing"}), 400
-
-    instance_url = INSTANCE_URL
-    if not instance_url:
+    if not INSTANCE_URL:
         logger.error("INSTANCE_URL not set.")
         return jsonify({"status": "error", "message": "INSTANCE_URL not set"}), 500
 
-    webhook_url = f"{instance_url}stripe-webhook"
-    logger.debug("Using webhook URL: %s", webhook_url)
+    webhook_url = f"{INSTANCE_URL}/stripe-webhook"
 
-    stripe.api_key = stripe_api_key
+    # Create Test Webhook
     try:
-        webhook = stripe.WebhookEndpoint.create(
+        stripe.api_key = stripe_test_key
+        webhook_test = stripe.WebhookEndpoint.create(
             enabled_events=["checkout.session.completed"],
             url=webhook_url,
-            description="Facturio Early Adopter Program"
+            description="Facturio Early Adopter Program (Test)"
         )
-        webhook_data = {
-            "id": webhook.get("id"),
-            "secret": webhook.get("secret")
+        webhook_test_data = {
+            "id": webhook_test.get("id"),
+            "secret": webhook_test.get("secret"),
+            "livemode": webhook_test.get("livemode")
         }
-        # Store webhook data separately.
-        db["stripe_webhook"] = json.dumps(webhook_data)
-        # ALSO update the user record with the webhook secret.
-        user_record["stripe_webhook_secret"] = webhook_data.get("secret")
-        db["user_record"] = json.dumps(user_record)
-        logger.info("Stripe webhook created and stored: %s", webhook_data)
-        return jsonify({"status": "success", "webhook": webhook_data}), 200
     except Exception as e:
-        logger.error("Stripe webhook creation error: %s", e)
-        return jsonify({"status": "error", "message": str(e)}), 500
+        logger.error("Error creating test webhook: %s", e)
+        return jsonify({"status": "error", "message": f"Error creating test webhook: {str(e)}"}), 500
+
+    # Create Live Webhook
+    try:
+        stripe.api_key = stripe_live_key
+        webhook_live = stripe.WebhookEndpoint.create(
+            enabled_events=["checkout.session.completed"],
+            url=webhook_url,
+            description="Facturio Early Adopter Program (Live)"
+        )
+        webhook_live_data = {
+            "id": webhook_live.get("id"),
+            "secret": webhook_live.get("secret"),
+            "livemode": webhook_live.get("livemode")
+        }
+    except Exception as e:
+        logger.error("Error creating live webhook: %s", e)
+        return jsonify({"status": "error", "message": f"Error creating live webhook: {str(e)}"}), 500
+
+    user_record["stripe_test_api_key"] = stripe_test_key
+    user_record["stripe_live_api_key"] = stripe_live_key
+    user_record["stripe_test_webhook"] = webhook_test_data
+    user_record["stripe_live_webhook"] = webhook_live_data
+    db["user_record"] = json.dumps(user_record)
+    logger.info("Stripe webhooks created and stored successfully.")
+    return jsonify({"status": "success", "message": "Stripe webhooks created successfully"}), 200
 
 
+@app.route("/update_stripe_key", methods=["GET", "POST"])
+def update_stripe_key():
+    user_data_raw = db.get("user_record")
+    if not user_data_raw:
+        flash("Vă rugăm să vă logați.")
+        return redirect(url_for("login"))
+    user_record = json.loads(user_data_raw)
+    if request.method == "POST":
+        new_stripe_key = request.form.get("new_stripe_key", "").strip()
+        if not new_stripe_key:
+            flash("Vă rugăm să introduceți un nou Stripe API key.")
+            return redirect(url_for("update_stripe_key"))
+        user_record["stripe_api_key"] = new_stripe_key
+        db["user_record"] = json.dumps(user_record)
+        flash("Stripe API key a fost actualizat cu succes!")
+        return redirect(url_for("dashboard"))
+    return render_template("update_stripe_key.html", current_stripe_key=user_record.get("stripe_api_key", ""))
 
 # ----------------------------------------------------------------------
 # Authentication, Dashboard, and Account Management Endpoints
 # ----------------------------------------------------------------------
 @app.route("/login", methods=["GET", "POST"])
 def login():
-    """
-    Login endpoint:
-      - GET: Renders the login form.
-      - POST: Validates credentials against the unified user record.
-      Expects the user to enter:
-         - Email (SmartBill email)
-         - Password (company tax code)
-    """
     if request.method == "POST":
         email = request.form.get("email", "").strip()
-        password = request.form.get("password", "").strip()  # Expected to be the company tax code
+        password = request.form.get("password", "").strip()
 
         user_data_raw = db.get("user_record")
         if not user_data_raw:
@@ -313,33 +318,27 @@ def login():
 
 @app.route("/logout")
 def logout():
-    """
-    Logout endpoint: Clears the session.
-    """
     session.clear()
     flash("Ați fost deconectat.")
     return redirect(url_for("login"))
 
 @app.route("/dashboard")
 def dashboard():
-    """
-    Dashboard endpoint: Displays user details from the unified user record.
-    """
     user_data_raw = db.get("user_record")
     if not user_data_raw:
         flash("Vă rugăm să vă logați și să completați onboarding-ul.")
         return redirect(url_for("login"))
     user_record = json.loads(user_data_raw)
-    email = user_record.get("smartbill_email", "N/A")
-    default_series = user_record.get("default_series", "N/A")
-    cui = user_record.get("company_tax_code", "N/A")
-    return render_template("dashboard.html", email=email, cui=cui, default_series=default_series)
+    return render_template("dashboard.html", 
+                           smartbill_email=user_record.get("smartbill_email", "N/A"),
+                           company_tax_code=user_record.get("company_tax_code", "N/A"),
+                           default_series=user_record.get("default_series", "N/A"),
+                           smartbill_token=user_record.get("smartbill_token", ""),
+                           stripe_test_api_key=user_record.get("stripe_test_api_key", ""),
+                           stripe_live_api_key=user_record.get("stripe_live_api_key", ""))
 
 @app.route("/change_password", methods=["GET", "POST"])
 def change_password():
-    """
-    Allows the logged-in user to change their company tax code.
-    """
     user_data_raw = db.get("user_record")
     if not user_data_raw:
         flash("Vă rugăm să vă logați.")
@@ -358,20 +357,11 @@ def change_password():
 
 @app.route("/status")
 def status():
-    """
-    Status endpoint: Confirms that the app is running.
-    """
     return "Onboarding SmartBill App is running."
 
 # ----------------------------------------------------------------------
 # Facturio Integration Endpoint (Stripe Webhook)
 # ----------------------------------------------------------------------
-# The following helper functions are assumed to be defined in their respective modules:
-# - build_payload (from services.utils)
-# - create_smartbill_invoice, delete_smartbill_invoice (from services.smartbill)
-# - is_event_processed, mark_event_processed, remove_event (from services.idempotency)
-# - notify_admin (from services.notifications)
-# - send_invoice_email (from services.email_sender)
 from services.utils import build_payload
 from services.smartbill import create_smartbill_invoice
 from services.idempotency import is_event_processed, mark_event_processed, remove_event
@@ -379,14 +369,8 @@ from services.notifications import notify_admin
 from services.email_sender import send_invoice_email
 
 @app.route("/stripe-webhook", methods=["POST"])
+@app.route("/stripe-webhook", methods=["POST"])
 def stripe_webhook():
-    """
-    Stripe webhook endpoint:
-      - Processes "checkout.session.completed" events.
-      - Retrieves dynamic configuration from the unified user record.
-      - Builds payload for the SmartBill API and creates an invoice.
-      - Sends an email notification.
-    """
     payload = request.get_data()
     sig_header = request.headers.get("Stripe-Signature")
 
@@ -395,15 +379,28 @@ def stripe_webhook():
         logger.error("User record not found. Onboarding incomplete.")
         return jsonify(success=False, error="Onboarding incomplete"), 400
 
-    stored_stripe_webhook_secret = user_record.get("stripe_webhook_secret")
-    if not stored_stripe_webhook_secret:
-        logger.error("Stripe webhook secret not found in user record.")
+    # Retrieve both webhook secrets from the stored test and live webhooks.
+    test_webhook_data = user_record.get("stripe_test_webhook", {})
+    live_webhook_data = user_record.get("stripe_live_webhook", {})
+    test_webhook_secret = test_webhook_data.get("secret")
+    live_webhook_secret = live_webhook_data.get("secret")
+
+    if not (test_webhook_secret or live_webhook_secret):
+        logger.error("No Stripe webhook secrets found in user record.")
         return jsonify(success=False, error="Stripe webhook secret missing"), 400
 
-    try:
-        event = stripe.Webhook.construct_event(payload, sig_header, stored_stripe_webhook_secret)
-    except Exception as e:
-        logger.error("Webhook signature verification failed: %s", e)
+    # Attempt to verify the event using the available secrets.
+    event = None
+    for secret in [test_webhook_secret, live_webhook_secret]:
+        if secret:
+            try:
+                event = stripe.Webhook.construct_event(payload, sig_header, secret)
+                break  # Successfully verified, exit loop.
+            except Exception as e:
+                continue
+
+    if not event:
+        logger.error("Webhook signature verification failed with both secrets.")
         return jsonify(success=False, error="Invalid signature"), 400
 
     event_id = event.get("id")
@@ -430,31 +427,7 @@ def stripe_webhook():
             logger.info("Final payload built: %s", json.dumps(final_payload, indent=2))
             invoice_response = create_smartbill_invoice(final_payload, merged_config)
             logger.info("SmartBill Invoice Response: %s", json.dumps(invoice_response, indent=2))
-
             # Email functionality is disabled.
-            """
-            email_payload = {
-                "companyVatCode": dynamic_config["companyVatCode"],
-                "seriesName": dynamic_config["seriesName"],
-                "number": invoice_response.get("number"),
-                "type": "factura",
-                "subject": base64.b64encode("Invoice Notification".encode("utf-8")).decode("utf-8"),
-                "to": session_obj.get("customer_details", {}).get("email"),
-                "bodyText": base64.b64encode("Your invoice has been created successfully.".encode("utf-8")).decode("utf-8"),
-                "emailConfig": {
-                    "mailFrom": dynamic_config["SMARTBILL_USERNAME"],
-                    "password": dynamic_config["APP_PASSWORD"],
-                    "smtpServer": "smtp.gmail.com",
-                    "smtpPort": 587,
-                    "useTLS": True
-                }
-            }
-            try:
-                send_invoice_email(email_payload)
-            except Exception as email_err:
-                logger.error("Failed to send invoice email: %s", email_err)
-                notify_admin(email_err)
-            """
         else:
             logger.info("Unhandled event type: %s", event.get("type"))
     except Exception as e:
@@ -464,6 +437,7 @@ def stripe_webhook():
         return jsonify(success=False, error="Internal server error"), 500
 
     return jsonify(success=True), 200
+
 
 # ----------------------------------------------------------------------
 # Run the Application

@@ -2,34 +2,91 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <title>Facturio - Dashboard</title>
+  <title>Dashboard</title>
   <style>
-    body { font-family: Arial, sans-serif; margin: 2em; }
-    .header { display: flex; justify-content: space-between; align-items: center; }
-    .header div { font-size: 0.9em; }
-    a { text-decoration: none; color: blue; }
+    body { 
+      font-family: Arial, sans-serif; 
+      margin: 2em; 
+      background-color: #f9f9f9;
+    }
+    .info, .auth-values {
+      margin-bottom: 1em; 
+      padding: 1em; 
+      background-color: #fff; 
+      border: 1px solid #ddd; 
+      border-radius: 5px;
+    }
+    .info p, .auth-values p {
+      margin: 0.5em 0;
+    }
+    .button {
+      display: inline-block;
+      padding: 0.5em 1em;
+      margin: 0.5em 0;
+      background-color: #007bff;
+      color: white;
+      text-decoration: none;
+      border-radius: 3px;
+    }
+    .button:hover {
+      background-color: #0056b3;
+    }
+    .toggle-btn {
+      padding: 0.25em 0.5em;
+      font-size: 0.9em;
+      margin-left: 0.5em;
+    }
   </style>
 </head>
 <body>
-  <div class="header">
-    <div>
-      <h1>Dashboard</h1>
-      <p>{{ flash_message or "" }}</p>
-    </div>
-    <div>
-      <!-- Display SmartBill user info in the upper right corner -->
-      <p><strong>Nume utilizator:</strong> {{ email }}</p>
-      <p><strong>CUI:</strong> {{ cui }}</p>
-      <p><strong>Seria facturare:</strong> {{ default_series }}</p>
-      <!-- Logout button -->
-      <p><a href="{{ url_for('logout') }}">Logout</a></p>
-      <!-- Link to change password -->
-      <p><a href="{{ url_for('change_password') }}">Schimbare parola</a></p>
-    </div>
+  <h1>Dashboard</h1>
+
+  <!-- Basic User Information -->
+  <div class="info">
+    <p><strong>SmartBill Username:</strong> {{ smartbill_email }}</p>
+    <p><strong>CUI:</strong> {{ company_tax_code }}</p>
+    <p><strong>Seria factura:</strong> {{ default_series }}</p>
   </div>
 
-  <hr>
-  <p>Bine ați venit în Facturio Dashboard!</p>
-  <!-- Here you can add more dashboard content -->
+  <!-- Sensitive Authentication Data -->
+  <div class="auth-values">
+    <h2>Authentication Details</h2>
+    <p>
+      <strong>SmartBill Token:</strong> 
+      <span id="smartbill_token_value" style="display: none;">{{ smartbill_token }}</span>
+      <button class="toggle-btn" onclick="toggleVisibility('smartbill_token_value', this)">Show</button>
+    </p>
+    <h3>Stripe API Keys</h3>
+    <p>
+      <strong>Test Stripe API Key:</strong> 
+      <span id="stripe_test_api_key_value" style="display: none;">{{ stripe_test_api_key }}</span>
+      <button class="toggle-btn" onclick="toggleVisibility('stripe_test_api_key_value', this)">Show</button>
+    </p>
+    <p>
+      <strong>Live Stripe API Key:</strong> 
+      <span id="stripe_live_api_key_value" style="display: none;">{{ stripe_live_api_key }}</span>
+      <button class="toggle-btn" onclick="toggleVisibility('stripe_live_api_key_value', this)">Show</button>
+    </p>
+  </div>
+
+  <!-- Action Buttons -->
+  <div class="actions">
+    <p><a href="{{ url_for('change_password') }}" class="button">Change Password</a></p>
+    <p><a href="{{ url_for('logout') }}" class="button">Logout</a></p>
+  </div>
+
+  <script>
+    function toggleVisibility(elementId, btn) {
+      var el = document.getElementById(elementId);
+      var currentDisplay = window.getComputedStyle(el).display;
+      if (currentDisplay === "none") {
+        el.style.display = "inline";
+        btn.textContent = "Hide";
+      } else {
+        el.style.display = "none";
+        btn.textContent = "Show";
+      }
+    }
+  </script>
 </body>
 </html>
