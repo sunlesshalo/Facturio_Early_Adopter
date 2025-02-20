@@ -8,6 +8,11 @@ authors = ["Your Name <you@example.com>"]
 python = ">=3.11.0,<3.12"
 flask = "^3.0.0"
 gunicorn = "^21.2.0"
+requests = "^2.32.3"
+smartbill-sdk = "^0.2.6"
+stripe = "^11.5.0"
+notifications = "^0.3.2"
+replit = "^4.1.1"
 
 [tool.pyright]
 # https://github.com/microsoft/pyright/blob/main/docs/configuration.md
