@@ -292,9 +292,17 @@ def update_stripe_key():
 # ----------------------------------------------------------------------
 @app.route("/login", methods=["GET", "POST"])
 def login():
+    """
+    Login endpoint:
+      - GET: Renders the login form.
+      - POST: Validates credentials against the unified user record.
+        Expects the user to enter:
+           - Email (SmartBill email)
+           - Password (initially the tax code, then the updated password)
+    """
     if request.method == "POST":
         email = request.form.get("email", "").strip()
-        password = request.form.get("password", "").strip()
+        password = request.form.get("password", "").strip()  # Now checked against the stored password
 
         user_data_raw = db.get("user_record")
         if not user_data_raw:
@@ -304,7 +312,8 @@ def login():
         if email != user_record.get("smartbill_email"):
             flash("Utilizatorul nu există. Vă rugăm să completați onboarding-ul.")
             return redirect(url_for("login"))
-        if password != user_record.get("company_tax_code"):
+        # Validate password against app_secret_key (the actual stored password)
+        if password != user_record.get("app_secret_key"):
             flash("Parola incorectă!")
             return redirect(url_for("login"))
         if "default_series" not in user_record:
@@ -315,6 +324,7 @@ def login():
         flash("Logare cu succes!")
         return redirect(url_for("dashboard"))
     return render_template("login.html")
+
 
 @app.route("/logout")
 def logout():
@@ -339,6 +349,10 @@ def dashboard():
 
 @app.route("/change_password", methods=["GET", "POST"])
 def change_password():
+    """
+    Allows the logged-in user to change their password.
+    The password is stored separately in the "app_secret_key" field.
+    """
     user_data_raw = db.get("user_record")
     if not user_data_raw:
         flash("Vă rugăm să vă logați.")
@@ -349,11 +363,13 @@ def change_password():
         if not new_password:
             flash("Vă rugăm să introduceți o parolă nouă.")
             return redirect(url_for("change_password"))
-        user_record["company_tax_code"] = new_password
+        # Update only the password field, leaving company_tax_code intact.
+        user_record["app_secret_key"] = new_password
         db["user_record"] = json.dumps(user_record)
         flash("Parola a fost actualizată cu succes!")
         return redirect(url_for("dashboard"))
     return render_template("change_password.html")
+
 
 @app.route("/status")
 def status():
