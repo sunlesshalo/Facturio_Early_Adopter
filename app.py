@@ -27,6 +27,23 @@ from replit import db  # Replit's built-in simple database
 
 from config import config_defaults
 
+import bcrypt
+
+def hash_password(plain_password: str) -> str:
+    """
+    Hash the plain text password using bcrypt and return the hashed password as a UTF-8 string.
+    """
+    salt = bcrypt.gensalt()
+    hashed = bcrypt.hashpw(plain_password.encode('utf-8'), salt)
+    return hashed.decode('utf-8')
+
+def check_password(plain_password: str, hashed_password: str) -> bool:
+    """
+    Verify a plain text password against the stored bcrypt hash.
+    """
+    return bcrypt.checkpw(plain_password.encode('utf-8'), hashed_password.encode('utf-8'))
+
+
 # ----------------------------------------------------------------------
 # Configuration and Global Constants
 # ----------------------------------------------------------------------
@@ -112,6 +129,9 @@ def onboarding():
             flash("Toate câmpurile sunt obligatorii.")
             return redirect(url_for("onboarding"))
 
+        # Hash the password before storing
+        hashed_password = hash_password(password)
+
         user_record = {
             "smartbill_email": smartbill_email,
             "smartbill_token": smartbill_token,
@@ -119,13 +139,14 @@ def onboarding():
             "default_series": default_series,
             "stripe_test_api_key": stripe_test_api_key,
             "stripe_live_api_key": stripe_live_api_key,
-            "app_secret_key": password,
+            "app_secret_key": hashed_password,
         }
         db["user_record"] = json.dumps(user_record)
-        app.secret_key = password
+        app.secret_key = password  # Optionally, you might want to update this after verifying the hash
         flash("Onboarding completat cu succes!")
         return redirect(url_for("dashboard"))
     return render_template("index.html")
+
 
 # ----------------------------------------------------------------------
 # Onboarding API Endpoints
@@ -302,7 +323,7 @@ def login():
     """
     if request.method == "POST":
         email = request.form.get("email", "").strip()
-        password = request.form.get("password", "").strip()  # Now checked against the stored password
+        password = request.form.get("password", "").strip()
 
         user_data_raw = db.get("user_record")
         if not user_data_raw:
@@ -312,8 +333,9 @@ def login():
         if email != user_record.get("smartbill_email"):
             flash("Utilizatorul nu există. Vă rugăm să completați onboarding-ul.")
             return redirect(url_for("login"))
-        # Validate password against app_secret_key (the actual stored password)
-        if password != user_record.get("app_secret_key"):
+
+        stored_hash = user_record.get("app_secret_key")
+        if not stored_hash or not check_password(password, stored_hash):
             flash("Parola incorectă!")
             return redirect(url_for("login"))
         if "default_series" not in user_record:
@@ -324,6 +346,7 @@ def login():
         flash("Logare cu succes!")
         return redirect(url_for("dashboard"))
     return render_template("login.html")
+
 
 
 @app.route("/logout")
@@ -363,17 +386,13 @@ def change_password():
         if not new_password:
             flash("Vă rugăm să introduceți o parolă nouă.")
             return redirect(url_for("change_password"))
-        # Update only the password field, leaving company_tax_code intact.
-        user_record["app_secret_key"] = new_password
+        # Hash the new password before updating the user record.
+        user_record["app_secret_key"] = hash_password(new_password)
         db["user_record"] = json.dumps(user_record)
         flash("Parola a fost actualizată cu succes!")
         return redirect(url_for("dashboard"))
     return render_template("change_password.html")
 
-
-@app.route("/status")
-def status():
-    return "Onboarding SmartBill App is running."
 
 # ----------------------------------------------------------------------
 # Facturio Integration Endpoint (Stripe Webhook)
