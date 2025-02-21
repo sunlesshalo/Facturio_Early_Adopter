@@ -30,7 +30,7 @@ from config import config_defaults
 # ----------------------------------------------------------------------
 # Configuration and Global Constants
 # ----------------------------------------------------------------------
-INSTANCE_URL = os.environ.get("INSTANCE_URL", "https://your-instance-url")
+CUSTOM_INSTANCE_URL = os.environ.get("CUSTOM_INSTANCE_URL", "https://your-instance-url")
 
 # ----------------------------------------------------------------------
 # Logging Configuration
@@ -220,11 +220,11 @@ def api_stripe_create_webhooks():
         logger.error("User record not found. Cannot create Stripe webhooks.")
         return jsonify({"status": "error", "message": "Onboarding incomplete"}), 400
 
-    if not INSTANCE_URL:
-        logger.error("INSTANCE_URL not set.")
-        return jsonify({"status": "error", "message": "INSTANCE_URL not set"}), 500
+    if not CUSTOM_INSTANCE_URL:
+        logger.error("CUSTOM_INSTANCE_URL not set.")
+        return jsonify({"status": "error", "message": "CUSTOM_INSTANCE_URL not set"}), 500
 
-    webhook_url = f"{INSTANCE_URL}/stripe-webhook"
+    webhook_url = f"{CUSTOM_INSTANCE_URL.rstrip('/')}/stripe-webhook"
 
     # Create Test Webhook
     try:
