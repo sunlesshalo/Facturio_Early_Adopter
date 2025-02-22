@@ -2,13 +2,27 @@ import os
 import json
 import stripe
 from replit import db
+from cryptography.fernet import Fernet
+
+def get_fernet():
+    config_key = os.environ.get("CONFIG_KEY")
+    if not config_key:
+        raise Exception("CONFIG_KEY environment variable is not set.")
+    return Fernet(config_key.encode())
 
 def clear_user_data():
-    # Retrieve the user record from the DB.
+    # Retrieve the encrypted user record from the DB.
     user_record_raw = db.get("user_record")
     if user_record_raw:
-        # Load the record from JSON if it's stored as a string.
-        user_record = json.loads(user_record_raw) if isinstance(user_record_raw, str) else user_record_raw
+        try:
+            # Decrypt the record
+            f = get_fernet()
+            encrypted_bytes = user_record_raw.encode("utf-8")
+            user_record = json.loads(f.decrypt(encrypted_bytes).decode("utf-8"))
+        except Exception as e:
+            print("Error decrypting user record. It may be corrupted or already cleared:", e)
+            # In case decryption fails, we can't safely extract webhook info.
+            user_record = {}
 
         # Delete Stripe test webhook if it exists.
         if "stripe_test_webhook" in user_record:
@@ -28,7 +42,6 @@ def clear_user_data():
             live_webhook = user_record["stripe_live_webhook"]
             webhook_id = live_webhook.get("id")
             if webhook_id:
-                # Set API key to the stored live key or fallback to env variable.
                 stripe.api_key = user_record.get("stripe_live_api_key", os.environ.get("STRIPE_LIVE_API_KEY", ""))
                 try:
                     stripe.WebhookEndpoint.delete(webhook_id)
