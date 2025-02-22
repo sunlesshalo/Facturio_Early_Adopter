@@ -381,41 +381,67 @@ def api_stripe_create_webhooks():
 
     webhook_url = f"{CUSTOM_INSTANCE_URL.rstrip('/')}/stripe-webhook"
 
-    # Create Test Webhook
+    # --- Create (or re-use) Test Webhook ---
+    stripe.api_key = stripe_test_key
     try:
-        stripe.api_key = stripe_test_key
-        webhook_test = stripe.WebhookEndpoint.create(
-            enabled_events=["checkout.session.completed"],
-            url=webhook_url,
-            description="Facturio Early Adopter Program (Test)"
-        )
-        webhook_test_data = {
-            "id": webhook_test.get("id"),
-            "secret": webhook_test.get("secret"),
-            "livemode": webhook_test.get("livemode")
-        }
+        existing_test_webhooks = stripe.WebhookEndpoint.list(limit=100)
     except Exception as e:
-        logger.error("Error creating test webhook: %s", e)
-        return jsonify({"status": "error", "message": f"Error creating test webhook: {str(e)}"}), 500
+        logger.error("Error listing test webhooks: %s", e)
+        return jsonify({"status": "error", "message": f"Error listing test webhooks: {str(e)}"}), 500
 
-    # Create Live Webhook
+    webhook_test = None
+    for wh in existing_test_webhooks.data:
+        if wh.url == webhook_url and wh.description == "Facturio Early Adopter Program (Test)":
+            webhook_test = wh
+            break
+    if webhook_test is None:
+        try:
+            webhook_test = stripe.WebhookEndpoint.create(
+                enabled_events=["checkout.session.completed"],
+                url=webhook_url,
+                description="Facturio Early Adopter Program (Test)"
+            )
+        except Exception as e:
+            logger.error("Error creating test webhook: %s", e)
+            return jsonify({"status": "error", "message": f"Error creating test webhook: {str(e)}"}), 500
+
+    webhook_test_data = {
+        "id": webhook_test.get("id"),
+        "secret": webhook_test.get("secret"),
+        "livemode": webhook_test.get("livemode")
+    }
+
+    # --- Create (or re-use) Live Webhook ---
+    stripe.api_key = stripe_live_key
     try:
-        stripe.api_key = stripe_live_key
-        webhook_live = stripe.WebhookEndpoint.create(
-            enabled_events=["checkout.session.completed"],
-            url=webhook_url,
-            description="Facturio Early Adopter Program (Live)"
-        )
-        webhook_live_data = {
-            "id": webhook_live.get("id"),
-            "secret": webhook_live.get("secret"),
-            "livemode": webhook_live.get("livemode")
-        }
+        existing_live_webhooks = stripe.WebhookEndpoint.list(limit=100)
     except Exception as e:
-        logger.error("Error creating live webhook: %s", e)
-        return jsonify({"status": "error", "message": f"Error creating live webhook: {str(e)}"}), 500
+        logger.error("Error listing live webhooks: %s", e)
+        return jsonify({"status": "error", "message": f"Error listing live webhooks: {str(e)}"}), 500
 
-    # Update user record with webhook info.
+    webhook_live = None
+    for wh in existing_live_webhooks.data:
+        if wh.url == webhook_url and wh.description == "Facturio Early Adopter Program (Live)":
+            webhook_live = wh
+            break
+    if webhook_live is None:
+        try:
+            webhook_live = stripe.WebhookEndpoint.create(
+                enabled_events=["checkout.session.completed"],
+                url=webhook_url,
+                description="Facturio Early Adopter Program (Live)"
+            )
+        except Exception as e:
+            logger.error("Error creating live webhook: %s", e)
+            return jsonify({"status": "error", "message": f"Error creating live webhook: {str(e)}"}), 500
+
+    webhook_live_data = {
+        "id": webhook_live.get("id"),
+        "secret": webhook_live.get("secret"),
+        "livemode": webhook_live.get("livemode")
+    }
+
+    # --- Update user record with new webhook info ---
     user_record["stripe_test_api_key"] = stripe_test_key
     user_record["stripe_live_api_key"] = stripe_live_key
     user_record["stripe_test_webhook"] = webhook_test_data
@@ -428,6 +454,7 @@ def api_stripe_create_webhooks():
 
     logger.info("Stripe webhooks created and stored successfully.")
     return jsonify({"status": "success", "message": "Stripe webhooks created successfully"}), 200
+
 
 # --------------------------
 # Authentication, Login, Logout, and Change Password Endpoints
