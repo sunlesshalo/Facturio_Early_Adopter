@@ -14,5 +14,6 @@ config_defaults = {
     "taxName": "TVA",
     "taxPercentage": 19,
     "saveToDb": True,
-    "isService": True
+    "isService": True,
+    "LOGIN_VIEW": "login"
 }
