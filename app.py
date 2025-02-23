@@ -166,6 +166,18 @@ CUSTOM_INSTANCE_URL = os.environ.get("CUSTOM_INSTANCE_URL", "https://your-instan
 # Create Flask App and Setup Flask-Login
 # ----------------------------------------------------------------------
 app = Flask(__name__)
+
+from flask_wtf.csrf import CSRFProtect, CSRFError
+
+csrf = CSRFProtect(app)
+
+@app.errorhandler(CSRFError)
+def handle_csrf_error(e):
+    logger.error("CSRF error: %s", e)
+    return jsonify({"status": "error", "message": "CSRF validation failed"}), 400
+
+
+
 login_manager = LoginManager(app)
 login_manager.login_view = 'login'  # Redirect unauthorized users to login
 app.secret_key = os.environ.get("FLASK_SECRET_KEY", "default_secret_key")
@@ -599,6 +611,7 @@ from services.idempotency import is_event_processed, mark_event_processed, remov
 from services.notifications import notify_admin
 from services.email_sender import send_invoice_email
 
+@csrf.exempt
 @app.route("/stripe-webhook-test", methods=["POST"])
 def stripe_webhook_test():
     payload = request.get_data()
@@ -651,7 +664,7 @@ def stripe_webhook_test():
 
     return jsonify(success=True), 200
 
-
+@csrf.exempt
 @app.route("/stripe-webhook-live", methods=["POST"])
 def stripe_webhook_live():
     payload = request.get_data()

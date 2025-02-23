@@ -27,6 +27,20 @@
       width: 100%;
     }
   </style>
+  <!-- Include jQuery only once -->
+  <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+  <meta name="csrf-token" content="{{ csrf_token() }}">
+  <script>
+    // Retrieve the CSRF token from the meta tag
+    const csrfToken = document.querySelector('meta[name="csrf-token"]').getAttribute('content');
+
+    // For jQuery AJAX requests (if needed)
+    $(document).ajaxSend(function(event, jqxhr, settings) {
+      if (csrfToken) {
+        jqxhr.setRequestHeader("X-CSRFToken", csrfToken);
+      }
+    });
+  </script>
 </head>
 <body>
   <h1>Onboarding</h1>
@@ -154,7 +168,10 @@
           // AJAX call to get invoice series.
           fetch("/api/get_series", {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
+            headers: { 
+              "Content-Type": "application/json",
+              "X-CSRFToken": csrfToken
+            },
             body: JSON.stringify({ smartbill_email, smartbill_token, cif })
           })
           .then(response => response.json())
@@ -171,7 +188,10 @@
               // Update user record with default series.
               fetch("/api/set_default_series", {
                 method: "POST",
-                headers: { "Content-Type": "application/json" },
+                headers: { 
+                  "Content-Type": "application/json",
+                  "X-CSRFToken": csrfToken
+                },
                 body: JSON.stringify({ smartbill_email, smartbill_token, default_series: seriesName, cif })
               })
               .then(res => res.json())
@@ -223,7 +243,10 @@
           const cif = document.getElementById("cif").value.trim();
           fetch("/api/set_default_series", {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
+            headers: { 
+              "Content-Type": "application/json",
+              "X-CSRFToken": csrfToken
+            },
             body: JSON.stringify({ smartbill_email, smartbill_token, default_series, cif })
           })
           .then(res => res.json())
@@ -277,7 +300,10 @@
           }
           fetch("/api/stripe_create_webhooks", {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
+            headers: { 
+              "Content-Type": "application/json",
+              "X-CSRFToken": csrfToken
+            },
             body: JSON.stringify({ stripe_test_key: stripe_test_api_key, stripe_live_key: stripe_live_api_key })
           })
           .then(response => response.json())
