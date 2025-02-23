@@ -2,6 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Onboarding - Conectare la SmartBill & Stripe</title>
   <style>
     body { font-family: Arial, sans-serif; margin: 2em; }
@@ -23,6 +24,11 @@
       border-radius: 5px;
       max-width: 400px;
       width: 100%;
+    }
+    @media (max-width: 600px) {
+      body { margin: 1em; }
+      form p { margin-bottom: 0.8em; }
+      .modal-content { max-width: 90%; }
     }
   </style>
   <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>

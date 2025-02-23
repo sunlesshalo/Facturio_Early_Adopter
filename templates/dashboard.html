@@ -2,6 +2,7 @@
 <html lang="ro">
 <head>
   <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Dashboard</title>
   <style>
     body { 
@@ -70,6 +71,25 @@
     .button:hover {
       background-color: #0056b3;
     }
+    @media (max-width: 600px) {
+      body { margin: 1em; }
+      .top-right-buttons {
+        position: static;
+        text-align: center;
+        margin-bottom: 1em;
+      }
+      .top-right-buttons a {
+        margin: 0.2em;
+      }
+      .invoices table, .invoices th, .invoices td {
+        font-size: 0.9em;
+      }
+      /* Increase spacing between buttons on mobile */
+      .button {
+        margin-right: 10px;
+        margin-bottom: 10px;
+      }
+    }
   </style>
 </head>
 <body>
@@ -90,11 +110,11 @@
       <table>
         <thead>
           <tr>
-            <th>Nr. eveniment</th>
+            <th>Nr. art.</th>
             <th>Serie factură</th>
             <th>Valoare</th>
             <th>Nume Client</th>
-            <th>Cod TVA</th>
+            <th>CUI</th>
           </tr>
         </thead>
         <tbody>
@@ -129,11 +149,11 @@
           let tableHTML = "";
           if(invoices.length > 0){
             tableHTML += "<table><thead><tr>";
-            tableHTML += "<th>Nr. eveniment</th>";
+            tableHTML += "<th>Nr. art.</th>";
             tableHTML += "<th>Serie factură</th>";
             tableHTML += "<th>Valoare</th>";
             tableHTML += "<th>Nume Client</th>";
-            tableHTML += "<th>Cod TVA</th>";
+            tableHTML += "<th>CUI</th>";
             tableHTML += "</tr></thead><tbody>";
             let lastTen = invoices.slice(-10);
             lastTen.forEach(invoice => {
