@@ -235,11 +235,6 @@ def get_credentials():
         return credentials
 
 # =============================================================================
-# Global Constants & Configuration
-# =============================================================================
-CUSTOM_INSTANCE_URL = os.environ.get("CUSTOM_INSTANCE_URL", "https://your-instance-url")
-
-# =============================================================================
 # Create Flask App and Setup Flask-Login
 # =============================================================================
 app = Flask(__name__)
@@ -250,6 +245,34 @@ limiter = Limiter(
 )
 
 csrf = CSRFProtect(app)
+
+# =============================================================================
+# Input Validation and Error Handling Helpers
+# =============================================================================
+def validate_json_payload(payload, required_fields):
+    if not isinstance(payload, dict):
+        raise ValueError("Invalid JSON payload: expected a JSON object.")
+    sanitized = {}
+    errors = {}
+    for field in required_fields:
+        value = payload.get(field)
+        if value is None:
+            errors[field] = "Field is required."
+        elif not isinstance(value, str):
+            errors[field] = "Field must be a string."
+        elif not value.strip():
+            errors[field] = "Field cannot be empty."
+        else:
+            sanitized[field] = value.strip()
+    if errors:
+        error_messages = "; ".join([f"{k}: {v}" for k, v in errors.items()])
+        raise ValueError("Validation errors: " + error_messages)
+    return sanitized
+
+@app.errorhandler(ValueError)
+def handle_value_error(error):
+    logger.error("Validation error occurred: %s", error)
+    return jsonify({"status": "error", "message": str(error)}), 400
 
 @app.errorhandler(CSRFError)
 def handle_csrf_error(e):
@@ -415,14 +438,16 @@ def dashboard():
 @app.route("/api/get_series", methods=["POST"])
 @limiter.limit("20 per minute")
 def api_get_series():
-    data = request.get_json()
-    smartbill_email = data.get("smartbill_email", "").strip()
-    smartbill_token = data.get("smartbill_token", "").strip()
-    cif = data.get("cif", "").strip()
+    try:
+        data = request.get_json()
+        validated_data = validate_json_payload(data, ["smartbill_email", "smartbill_token", "cif"])
+    except ValueError as ve:
+        logger.error("Validation error in /api/get_series: %s", ve)
+        return jsonify({"status": "error", "message": str(ve)}), 400
 
-    if not (smartbill_email and smartbill_token and cif):
-        logger.warning("Missing required fields in JSON payload.")
-        return jsonify({"status": "error", "message": "Toate câmpurile sunt obligatorii"}), 400
+    smartbill_email = validated_data["smartbill_email"]
+    smartbill_token = validated_data["smartbill_token"]
+    cif = validated_data["cif"]
 
     series_url = f"{SMARTBILL_BASE_URL}series"
     headers = {"Content-Type": "application/json"}
@@ -453,16 +478,22 @@ def api_get_series():
 @app.route("/api/set_default_series", methods=["POST"])
 @limiter.limit("20 per minute")
 def api_set_default_series():
+    try:
+        data = request.get_json()
+        validated_data = validate_json_payload(data, ["smartbill_email", "smartbill_token", "cif", "default_series"])
+    except ValueError as ve:
+        logger.error("Validation error in /api/set_default_series: %s", ve)
+        return jsonify({"status": "error", "message": str(ve)}), 400
+
+    smartbill_email = validated_data["smartbill_email"]
+    smartbill_token = validated_data["smartbill_token"]
+    cif = validated_data["cif"]
+    default_series = validated_data["default_series"]
+
+    # Process optional fields as before
     data = request.get_json()
-    smartbill_email = data.get("smartbill_email", "").strip()
-    smartbill_token = data.get("smartbill_token", "").strip()
-    cif = data.get("cif", "").strip()
-    default_series = data.get("default_series", "").strip()
     stripe_api_key = data.get("stripe_api_key", "").strip()
     stripe_webhook_secret = data.get("stripe_webhook_secret", "").strip()
-
-    if not (smartbill_email and smartbill_token and cif and default_series):
-        return jsonify({"status": "error", "message": "Missing one or more required SmartBill fields"}), 400
 
     existing_record = get_user_record() or {}
     existing_record.update({
@@ -488,26 +519,26 @@ def api_set_default_series():
 @app.route("/api/stripe_create_webhooks", methods=["POST"])
 @limiter.limit("10 per minute")
 def api_stripe_create_webhooks():
-    data = request.get_json()
-    stripe_test_key = data.get("stripe_test_key", "").strip()
-    stripe_live_key = data.get("stripe_live_key", "").strip()
-    if not stripe_test_key or not stripe_live_key:
-        return jsonify({"status": "error", "message": "Both Stripe API keys are required"}), 400
+    try:
+        data = request.get_json()
+        validated_data = validate_json_payload(data, ["stripe_test_key", "stripe_live_key"])
+    except ValueError as ve:
+        logger.error("Validation error in /api/stripe_create_webhooks: %s", ve)
+        return jsonify({"status": "error", "message": str(ve)}), 400
 
-    if not stripe_test_key.startswith("sk_test"):
-        return jsonify({"status": "error", "message": "Test key must start with sk_test"}), 400
-    if not (stripe_live_key.startswith("sk_live") or stripe_live_key.startswith("rk_live")):
-        return jsonify({"status": "error", "message": "Live key must start with sk_live or rk_live"}), 400
+    stripe_test_key = validated_data["stripe_test_key"]
+    stripe_live_key = validated_data["stripe_live_key"]
 
     user_record = get_user_record()
     if not user_record:
         logger.error("User record not found. Cannot create Stripe webhooks.")
         return jsonify({"status": "error", "message": "Onboarding incomplete"}), 400
 
-    if not CUSTOM_INSTANCE_URL:
+    if not os.environ.get("CUSTOM_INSTANCE_URL"):
         logger.error("CUSTOM_INSTANCE_URL not set.")
         return jsonify({"status": "error", "message": "CUSTOM_INSTANCE_URL not set"}), 500
 
+    CUSTOM_INSTANCE_URL = os.environ.get("CUSTOM_INSTANCE_URL", "https://your-instance-url")
     webhook_test_url = f"{CUSTOM_INSTANCE_URL.rstrip('/')}/stripe-webhook-test"
     webhook_live_url = f"{CUSTOM_INSTANCE_URL.rstrip('/')}/stripe-webhook"
 
