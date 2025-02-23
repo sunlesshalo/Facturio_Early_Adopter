@@ -40,15 +40,11 @@
 </head>
 <body>
   <h1>Dashboard</h1>
-
-  <!-- Basic User Information -->
   <div class="info">
     <p><strong>SmartBill Username:</strong> {{ smartbill_email }}</p>
     <p><strong>CUI:</strong> {{ company_tax_code }}</p>
     <p><strong>Seria factura:</strong> {{ default_series }}</p>
   </div>
-
-  <!-- Sensitive Authentication Data -->
   <div class="auth-values">
     <h2>Authentication Details</h2>
     <p>
@@ -56,25 +52,17 @@
       <span id="smartbill_token_value" style="display: none;">{{ smartbill_token }}</span>
       <button class="toggle-btn" onclick="toggleVisibility('smartbill_token_value', this)">Show</button>
     </p>
-    <h3>Stripe API Keys</h3>
+    <h3>Stripe API Key</h3>
     <p>
-      <strong>Test Stripe API Key:</strong> 
-      <span id="stripe_test_api_key_value" style="display: none;">{{ stripe_test_api_key }}</span>
-      <button class="toggle-btn" onclick="toggleVisibility('stripe_test_api_key_value', this)">Show</button>
-    </p>
-    <p>
-      <strong>Live Stripe API Key:</strong> 
-      <span id="stripe_live_api_key_value" style="display: none;">{{ stripe_live_api_key }}</span>
-      <button class="toggle-btn" onclick="toggleVisibility('stripe_live_api_key_value', this)">Show</button>
+      <strong>Stripe API Key:</strong> 
+      <span id="stripe_api_key_value" style="display: none;">{{ stripe_api_key }}</span>
+      <button class="toggle-btn" onclick="toggleVisibility('stripe_api_key_value', this)">Show</button>
     </p>
   </div>
-
-  <!-- Action Buttons -->
   <div class="actions">
     <p><a href="{{ url_for('change_password') }}" class="button">Change Password</a></p>
     <p><a href="{{ url_for('logout') }}" class="button">Logout</a></p>
   </div>
-
   <script>
     function toggleVisibility(elementId, btn) {
       var el = document.getElementById(elementId);

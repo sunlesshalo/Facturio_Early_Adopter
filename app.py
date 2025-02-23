@@ -34,9 +34,9 @@ class RedactFilter(logging.Filter):
     """
     SENSITIVE_PATTERNS = [
         "smartbill_token",
-        "stripe_test_api_key",
-        "stripe_live_api_key",
+        "stripe_api_key",
         "stripe_webhook_secret",
+        "stripe_webhook",
         "password",
         "secret",
         "token"
@@ -44,19 +44,15 @@ class RedactFilter(logging.Filter):
 
     def filter(self, record):
         try:
-            # Force evaluation of the message if formatting arguments exist
             if record.args:
                 message = record.msg % record.args
-                # Clear args so no further formatting is attempted downstream
                 record.args = ()
             else:
                 message = record.msg
-            # Redact sensitive patterns
             for pattern in self.SENSITIVE_PATTERNS:
                 message = message.replace(pattern, "[REDACTED]")
             record.msg = message
         except Exception as e:
-            # If any error occurs, pass the record unmodified
             pass
         return True
 
@@ -118,7 +114,7 @@ LOGGING_CONFIG = {
               "formatter": "json",
               "filters": ["redact", "request_context"],
               "filename": "app.log",
-              "maxBytes": 10 * 1024 * 1024,  # 10MB
+              "maxBytes": 10 * 1024 * 1024,
               "backupCount": 5,
          }
     },
@@ -130,7 +126,6 @@ LOGGING_CONFIG = {
 
 logging.config.dictConfig(LOGGING_CONFIG)
 logger = logging.getLogger(__name__)
-# Global dictionary to track failed login attempts by IP address
 failed_login_attempts = {}
 
 # =============================================================================
@@ -145,7 +140,6 @@ if missing_vars:
 # =============================================================================
 # Database Initialization
 # =============================================================================
-# Use an in-memory substitute if REPLIT_DB_URL isn’t defined (useful for local testing)
 if "REPLIT_DB_URL" not in os.environ:
     logger.warning("REPLIT_DB_URL not set. Running in local mode with an in-memory DB.")
     class InMemoryDB(dict):
@@ -310,7 +304,6 @@ def load_user(user_id):
         return User(user_id, user_record)
     return None
 
-# Fixed parameters for SmartBill API calls
 SMARTBILL_BASE_URL = "https://ws.smartbill.ro/SBORO/api/"
 SMARTBILL_SERIES_TYPE = "f"
 
@@ -329,9 +322,6 @@ def get_smartbill_auth_header(username, token):
     logger.debug("Constructed Auth Header: %s", header)
     return header
 
-# -----------------------------------------------------------------------------
-# Request Context: assign a unique request_id to each request for context in logs.
-# -----------------------------------------------------------------------------
 @app.before_request
 def assign_request_id():
     g.request_id = str(uuid.uuid4())
@@ -348,10 +338,8 @@ def index():
             "smartbill_token": None,
             "cif": None,
             "default_series": None,
-            "stripe_test_api_key": None,
-            "stripe_live_api_key": None,
-            "stripe_test_webhook": None,
-            "stripe_live_webhook": None
+            "stripe_api_key": None,
+            "stripe_webhook": None
         }
         try:
             set_user_record(default_record)
@@ -362,7 +350,7 @@ def index():
             flash("Eroare la inițializarea datelor. Vă rugăm încercați din nou.")
             return "Internal server error", 500
 
-    live_webhook = user_record.get("stripe_live_webhook")
+    live_webhook = user_record.get("stripe_webhook")
     if not live_webhook or not live_webhook.get("secret"):
         form = OnboardingForm()
         return render_template("index.html", form=form)
@@ -380,10 +368,8 @@ def onboarding():
                 "smartbill_token": None,
                 "cif": None,
                 "default_series": None,
-                "stripe_test_api_key": None,
-                "stripe_live_api_key": None,
-                "stripe_test_webhook": None,
-                "stripe_live_webhook": None
+                "stripe_api_key": None,
+                "stripe_webhook": None
             }
             try:
                 set_user_record(default_record)
@@ -396,10 +382,9 @@ def onboarding():
         smartbill_token = form.smartbill_token.data.strip()
         cif = form.cif.data.strip()
         default_series = form.default_series.data.strip()
-        stripe_test_api_key = form.stripe_test_api_key.data.strip()
-        stripe_live_api_key = form.stripe_live_api_key.data.strip()
+        stripe_api_key = form.stripe_api_key.data.strip()
 
-        if not (smartbill_email and smartbill_token and cif and default_series and stripe_test_api_key and stripe_live_api_key):
+        if not (smartbill_email and smartbill_token and cif and default_series and stripe_api_key):
             flash("Toate câmpurile sunt obligatorii.")
             logger.error("Onboarding failed: Missing required fields.")
             return redirect(url_for("onboarding"))
@@ -409,10 +394,8 @@ def onboarding():
             "smartbill_token": smartbill_token,
             "cif": cif,
             "default_series": default_series,
-            "stripe_test_api_key": stripe_test_api_key,
-            "stripe_live_api_key": stripe_live_api_key,
-            "stripe_test_webhook": None,
-            "stripe_live_webhook": None
+            "stripe_api_key": stripe_api_key,
+            "stripe_webhook": None
         }
         try:
             set_user_record(new_record)
@@ -443,8 +426,7 @@ def dashboard():
                            company_tax_code=user_record.get("cif", "N/A"),
                            default_series=user_record.get("default_series", "N/A"),
                            smartbill_token=user_record.get("smartbill_token", ""),
-                           stripe_test_api_key=user_record.get("stripe_test_api_key", ""),
-                           stripe_live_api_key=user_record.get("stripe_live_api_key", ""))
+                           stripe_api_key=user_record.get("stripe_api_key", ""))
 
 @app.route("/api/get_series", methods=["POST"])
 @limiter.limit("20 per minute")
@@ -501,11 +483,6 @@ def api_set_default_series():
     cif = validated_data["cif"]
     default_series = validated_data["default_series"]
 
-    # Process optional fields as before
-    data = request.get_json()
-    stripe_api_key = data.get("stripe_api_key", "").strip()
-    stripe_webhook_secret = data.get("stripe_webhook_secret", "").strip()
-
     existing_record = get_user_record() or {}
     existing_record.update({
         "smartbill_email": smartbill_email,
@@ -513,10 +490,6 @@ def api_set_default_series():
         "cif": cif,
         "default_series": default_series,
     })
-    if stripe_api_key:
-        existing_record["stripe_api_key"] = stripe_api_key
-    if stripe_webhook_secret:
-        existing_record["stripe_webhook_secret"] = stripe_webhook_secret
 
     try:
         set_user_record(existing_record)
@@ -532,17 +505,16 @@ def api_set_default_series():
 def api_stripe_create_webhooks():
     try:
         data = request.get_json()
-        validated_data = validate_json_payload(data, ["stripe_test_key", "stripe_live_key"])
+        validated_data = validate_json_payload(data, ["stripe_api_key"])
     except ValueError as ve:
         logger.error("Validation error in /api/stripe_create_webhooks: %s", ve)
         return jsonify({"status": "error", "message": str(ve)}), 400
 
-    stripe_test_key = validated_data["stripe_test_key"]
-    stripe_live_key = validated_data["stripe_live_key"]
+    stripe_api_key = validated_data["stripe_api_key"]
 
     user_record = get_user_record()
     if not user_record:
-        logger.error("User record not found. Cannot create Stripe webhooks.")
+        logger.error("User record not found. Cannot create Stripe webhook.")
         return jsonify({"status": "error", "message": "Onboarding incomplete"}), 400
 
     if not os.environ.get("CUSTOM_INSTANCE_URL"):
@@ -550,79 +522,101 @@ def api_stripe_create_webhooks():
         return jsonify({"status": "error", "message": "CUSTOM_INSTANCE_URL not set"}), 500
 
     CUSTOM_INSTANCE_URL = os.environ.get("CUSTOM_INSTANCE_URL", "https://your-instance-url")
-    webhook_test_url = f"{CUSTOM_INSTANCE_URL.rstrip('/')}/stripe-webhook-test"
-    webhook_live_url = f"{CUSTOM_INSTANCE_URL.rstrip('/')}/stripe-webhook"
+    webhook_url = f"{CUSTOM_INSTANCE_URL.rstrip('/')}/stripe-webhook"
 
-    stripe.api_key = stripe_test_key
+    stripe.api_key = stripe_api_key
     try:
-        existing_test_webhooks = stripe.WebhookEndpoint.list(limit=100)
+        existing_webhooks = stripe.WebhookEndpoint.list(limit=100)
     except Exception as e:
-        logger.error("Error listing test webhooks: %s", e)
-        return jsonify({"status": "error", "message": f"Error listing test webhooks: {str(e)}"}), 500
+        logger.error("Error listing webhooks: %s", e)
+        return jsonify({"status": "error", "message": f"Error listing webhooks: {str(e)}"}), 500
 
-    webhook_test = None
-    for wh in existing_test_webhooks.data:
-        if wh.url == webhook_test_url and wh.description == "Facturio Early Adopter Program (Test)":
-            webhook_test = wh
+    webhook = None
+    for wh in existing_webhooks.data:
+        if wh.url == webhook_url and wh.description == "Facturio Early Adopter Program":
+            webhook = wh
             break
-    if webhook_test is None:
+    if webhook is None:
         try:
-            webhook_test = stripe.WebhookEndpoint.create(
+            webhook = stripe.WebhookEndpoint.create(
                 enabled_events=["checkout.session.completed"],
-                url=webhook_test_url,
-                description="Facturio Early Adopter Program (Test)"
+                url=webhook_url,
+                description="Facturio Early Adopter Program"
             )
         except Exception as e:
-            logger.error("Error creating test webhook: %s", e)
-            return jsonify({"status": "error", "message": f"Error creating test webhook: {str(e)}"}), 500
+            logger.error("Error creating webhook: %s", e)
+            return jsonify({"status": "error", "message": f"Error creating webhook: {str(e)}"}), 500
 
-    webhook_test_data = {
-        "id": webhook_test.get("id"),
-        "secret": webhook_test.get("secret"),
-        "livemode": webhook_test.get("livemode")
+    webhook_data = {
+        "id": webhook.get("id"),
+        "secret": webhook.get("secret"),
+        "livemode": webhook.get("livemode")
     }
 
-    stripe.api_key = stripe_live_key
-    try:
-        existing_live_webhooks = stripe.WebhookEndpoint.list(limit=100)
-    except Exception as e:
-        logger.error("Error listing live webhooks: %s", e)
-        return jsonify({"status": "error", "message": f"Error listing live webhooks: {str(e)}"}), 500
-
-    webhook_live = None
-    for wh in existing_live_webhooks.data:
-        if wh.url == webhook_live_url and wh.description == "Facturio Early Adopter Program (Live)":
-            webhook_live = wh
-            break
-    if webhook_live is None:
-        try:
-            webhook_live = stripe.WebhookEndpoint.create(
-                enabled_events=["checkout.session.completed"],
-                url=webhook_live_url,
-                description="Facturio Early Adopter Program (Live)"
-            )
-        except Exception as e:
-            logger.error("Error creating live webhook: %s", e)
-            return jsonify({"status": "error", "message": f"Error creating live webhook: {str(e)}"}), 500
-
-    webhook_live_data = {
-        "id": webhook_live.get("id"),
-        "secret": webhook_live.get("secret"),
-        "livemode": webhook_live.get("livemode")
-    }
-
-    user_record["stripe_test_api_key"] = stripe_test_key
-    user_record["stripe_live_api_key"] = stripe_live_key
-    user_record["stripe_test_webhook"] = webhook_test_data
-    user_record["stripe_live_webhook"] = webhook_live_data
+    user_record["stripe_api_key"] = stripe_api_key
+    user_record["stripe_webhook"] = webhook_data
     try:
         set_user_record(user_record)
     except Exception as e:
         logger.error("Error updating user record with webhook info: %s", e)
         return jsonify({"status": "error", "message": "Failed to update user record with webhook info"}), 500
 
-    logger.info("Stripe webhooks created and stored successfully.")
-    return jsonify({"status": "success", "message": "Stripe webhooks created successfully"}), 200
+    logger.info("Stripe webhook created and stored successfully.")
+    return jsonify({"status": "success", "message": "Stripe webhook created successfully"}), 200
+
+@csrf.exempt
+@app.route("/stripe-webhook", methods=["POST"])
+@limiter.limit("100 per minute")
+def stripe_webhook():
+    payload = request.get_data()
+    sig_header = request.headers.get("Stripe-Signature")
+    user_record = get_user_record()
+    if not user_record:
+        logger.error("User record not found. Onboarding incomplete.")
+        return jsonify(success=False, error="Onboarding incomplete"), 400
+
+    webhook_data = user_record.get("stripe_webhook", {})
+    webhook_secret = webhook_data.get("secret")
+    if not webhook_secret:
+        logger.error("Stripe webhook secret not found in user record.")
+        return jsonify(success=False, error="Stripe webhook secret missing"), 400
+
+    try:
+        event = stripe.Webhook.construct_event(payload, sig_header, webhook_secret)
+    except Exception as e:
+        logger.error("Webhook signature verification failed: %s", e)
+        return jsonify(success=False, error="Invalid signature"), 400
+
+    event_id = event.get("id")
+    if is_event_processed(event_id):
+        logger.info("Duplicate event received: %s. Ignoring.", event_id)
+        return jsonify(success=True, message="Duplicate event"), 200
+
+    mark_event_processed(event_id)
+    try:
+        if event.get("type") == "checkout.session.completed":
+            session_obj = event["data"]["object"]
+            dynamic_config = {
+                "SMARTBILL_USERNAME": user_record.get("smartbill_email"),
+                "smartbill_token": user_record.get("smartbill_token"),
+                "companyVatCode": user_record.get("cif"),
+                "seriesName": user_record.get("default_series"),
+                "stripe_api_key": user_record.get("stripe_api_key")
+            }
+            merged_config = {**config_defaults, **dynamic_config}
+            final_payload = build_payload(session_obj, merged_config)
+            logger.info("Final payload built: %s", json.dumps(final_payload, indent=2))
+            invoice_response = create_smartbill_invoice(final_payload, merged_config)
+            logger.info("SmartBill Invoice Response: %s", json.dumps(invoice_response, indent=2))
+        else:
+            logger.info("Unhandled event type: %s", event.get("type"))
+    except Exception as e:
+        logger.exception("Error processing event %s: %s", event_id, e)
+        notify_admin(e)
+        remove_event(event_id)
+        return jsonify(success=False, error="Internal server error"), 500
+
+    return jsonify(success=True), 200
 
 @app.route("/login", methods=["GET", "POST"])
 @limiter.limit("5 per minute")
@@ -664,7 +658,6 @@ def login():
             flash("Parola incorectă!")
             return redirect(url_for("login"))
 
-        # Successful login: reset failed login counter for this IP
         failed_login_attempts.pop(remote_ip, None)
         user_record = get_user_record() or {}
         user = User(email, user_record)
@@ -673,7 +666,6 @@ def login():
         flash("Logare cu succes!")
         return redirect(url_for("dashboard"))
     return render_template("login.html", form=form)
-
 
 @app.route("/logout")
 def logout():
@@ -708,9 +700,6 @@ def change_password():
         return redirect(url_for("dashboard"))
     return render_template("change_password.html", form=form)
 
-# =============================================================================
-# Facturio Integration Endpoint (Stripe Webhook)
-# =============================================================================
 from services.utils import build_payload
 from services.smartbill import create_smartbill_invoice
 from services.idempotency import is_event_processed, mark_event_processed, remove_event
@@ -718,116 +707,12 @@ from services.notifications import notify_admin
 from services.email_sender import send_invoice_email
 
 @csrf.exempt
-@app.route("/stripe-webhook-test", methods=["POST"])
+@app.route("/stripe-webhook", methods=["POST"])
 @limiter.limit("100 per minute")
-def stripe_webhook_test():
-    payload = request.get_data()
-    sig_header = request.headers.get("Stripe-Signature")
-    user_record = get_user_record()
-    if not user_record:
-        logger.error("User record not found. Onboarding incomplete.")
-        return jsonify(success=False, error="Onboarding incomplete"), 400
+def stripe_webhook_duplicate():
+    # This function is now replaced by the generic /stripe-webhook endpoint above.
+    pass
 
-    test_webhook_data = user_record.get("stripe_test_webhook", {})
-    test_webhook_secret = test_webhook_data.get("secret")
-    if not test_webhook_secret:
-        logger.error("Stripe test webhook secret not found in user record.")
-        return jsonify(success=False, error="Stripe test webhook secret missing"), 400
-
-    try:
-        event = stripe.Webhook.construct_event(payload, sig_header, test_webhook_secret)
-    except Exception as e:
-        logger.error("Webhook signature verification failed for test endpoint: %s", e)
-        return jsonify(success=False, error="Invalid signature"), 400
-
-    event_id = event.get("id")
-    if is_event_processed(event_id):
-        logger.info("Duplicate event received: %s. Ignoring.", event_id)
-        return jsonify(success=True, message="Duplicate event"), 200
-
-    mark_event_processed(event_id)
-    try:
-        if event.get("type") == "checkout.session.completed":
-            session_obj = event["data"]["object"]
-            dynamic_config = {
-                "SMARTBILL_USERNAME": user_record.get("smartbill_email"),
-                "smartbill_token": user_record.get("smartbill_token"),
-                "companyVatCode": user_record.get("cif"),
-                "seriesName": user_record.get("default_series"),
-                "stripe_api_key": user_record.get("stripe_api_key")
-            }
-            merged_config = {**config_defaults, **dynamic_config}
-            final_payload = build_payload(session_obj, merged_config)
-            logger.info("Final payload built: %s", json.dumps(final_payload, indent=2))
-            invoice_response = create_smartbill_invoice(final_payload, merged_config)
-            logger.info("SmartBill Invoice Response: %s", json.dumps(invoice_response, indent=2))
-        else:
-            logger.info("Unhandled event type: %s", event.get("type"))
-    except Exception as e:
-        logger.exception("Error processing event %s: %s", event_id, e)
-        notify_admin(e)
-        remove_event(event_id)
-        return jsonify(success=False, error="Internal server error"), 500
-
-    return jsonify(success=True), 200
-
-@csrf.exempt
-@app.route("/stripe-webhook-live", methods=["POST"])
-@limiter.limit("100 per minute")
-def stripe_webhook_live():
-    payload = request.get_data()
-    sig_header = request.headers.get("Stripe-Signature")
-    user_record = get_user_record()
-    if not user_record:
-        logger.error("User record not found. Onboarding incomplete.")
-        return jsonify(success=False, error="Onboarding incomplete"), 400
-
-    live_webhook_data = user_record.get("stripe_live_webhook", {})
-    live_webhook_secret = live_webhook_data.get("secret")
-    if not live_webhook_secret:
-        logger.error("Stripe live webhook secret not found in user record.")
-        return jsonify(success=False, error="Stripe live webhook secret missing"), 400
-
-    try:
-        event = stripe.Webhook.construct_event(payload, sig_header, live_webhook_secret)
-    except Exception as e:
-        logger.error("Webhook signature verification failed for live endpoint: %s", e)
-        return jsonify(success=False, error="Invalid signature"), 400
-
-    event_id = event.get("id")
-    if is_event_processed(event_id):
-        logger.info("Duplicate event received: %s. Ignoring.", event_id)
-        return jsonify(success=True, message="Duplicate event"), 200
-
-    mark_event_processed(event_id)
-    try:
-        if event.get("type") == "checkout.session.completed":
-            session_obj = event["data"]["object"]
-            dynamic_config = {
-                "SMARTBILL_USERNAME": user_record.get("smartbill_email"),
-                "smartbill_token": user_record.get("smartbill_token"),
-                "companyVatCode": user_record.get("cif"),
-                "seriesName": user_record.get("default_series"),
-                "stripe_api_key": user_record.get("stripe_api_key")
-            }
-            merged_config = {**config_defaults, **dynamic_config}
-            final_payload = build_payload(session_obj, merged_config)
-            logger.info("Final payload built: %s", json.dumps(final_payload, indent=2))
-            invoice_response = create_smartbill_invoice(final_payload, merged_config)
-            logger.info("SmartBill Invoice Response: %s", json.dumps(invoice_response, indent=2))
-        else:
-            logger.info("Unhandled event type: %s", event.get("type"))
-    except Exception as e:
-        logger.exception("Error processing event %s: %s", event_id, e)
-        notify_admin(e)
-        remove_event(event_id)
-        return jsonify(success=False, error="Internal server error"), 500
-
-    return jsonify(success=True), 200
-
-# =============================================================================
-# Run the Application
-# =============================================================================
 if __name__ == "__main__":
     port = 8080
     app.run(host="0.0.0.0", port=port)
