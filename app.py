@@ -23,6 +23,10 @@ import stripe
 import bcrypt
 from cryptography.fernet import Fernet
 
+# --- New Imports for Rate Limiting ---
+from flask_limiter import Limiter
+from flask_limiter.util import get_remote_address
+
 # --- Import Flask components and config defaults ---
 from flask import Flask, render_template, request, redirect, url_for, flash, jsonify, session
 from flask_login import LoginManager, UserMixin, login_user, logout_user, current_user, login_required
@@ -167,6 +171,14 @@ CUSTOM_INSTANCE_URL = os.environ.get("CUSTOM_INSTANCE_URL", "https://your-instan
 # ----------------------------------------------------------------------
 app = Flask(__name__)
 
+# --- Initialize Flask-Limiter for Rate Limiting and Brute-force Protection ---
+limiter = Limiter(
+    key_func=get_remote_address,
+    app=app,
+    default_limits=[]
+)
+
+
 from flask_wtf.csrf import CSRFProtect, CSRFError
 
 csrf = CSRFProtect(app)
@@ -266,6 +278,7 @@ def index():
 # Onboarding Endpoint
 # --------------------------
 @app.route("/onboarding", methods=["GET", "POST"])
+@limiter.limit("10 per minute")
 def onboarding():
     form = OnboardingForm()
     # On GET, initialize the user_record if it doesn't exist.
@@ -351,6 +364,7 @@ def dashboard():
 # API Endpoint: Get Invoice Series from SmartBill
 # --------------------------
 @app.route("/api/get_series", methods=["POST"])
+@limiter.limit("20 per minute")
 def api_get_series():
     data = request.get_json()
     smartbill_email = data.get("smartbill_email", "").strip()
@@ -391,6 +405,7 @@ def api_get_series():
 # API Endpoint: Update Default Series & Store Webhook Secrets
 # --------------------------
 @app.route("/api/set_default_series", methods=["POST"])
+@limiter.limit("20 per minute")
 def api_set_default_series():
     data = request.get_json()
     smartbill_email = data.get("smartbill_email", "").strip()
@@ -428,6 +443,7 @@ def api_set_default_series():
 # API Endpoint: Create Stripe Webhooks
 # --------------------------
 @app.route("/api/stripe_create_webhooks", methods=["POST"])
+@limiter.limit("10 per minute")
 def api_stripe_create_webhooks():
     data = request.get_json()
     stripe_test_key = data.get("stripe_test_key", "").strip()
@@ -533,6 +549,7 @@ def api_stripe_create_webhooks():
 # (Credentials are handled separately.)
 # --------------------------
 @app.route("/login", methods=["GET", "POST"])
+@limiter.limit("5 per minute")
 def login():
     form = LoginForm()
     if form.validate_on_submit():
@@ -547,7 +564,7 @@ def login():
             logger.error("Login failed: Credentials not found in DB.")
             return redirect(url_for("login"))
 
-        
+
         if email != credentials.get("smartbill_email"):
             flash("Utilizatorul nu există. Vă rugăm să completați onboarding-ul.")
             logger.error("Login failed: Email mismatch. Input: %s, Stored: %s", email, credentials.get("smartbill_email"))
@@ -577,6 +594,7 @@ def logout():
 
 @app.route("/change_password", methods=["GET", "POST"])
 @login_required
+@limiter.limit("5 per minute")
 def change_password():
     form = ChangePasswordForm()
     credentials = get_credentials()
@@ -613,6 +631,7 @@ from services.email_sender import send_invoice_email
 
 @csrf.exempt
 @app.route("/stripe-webhook-test", methods=["POST"])
+@limiter.limit("100 per minute")
 def stripe_webhook_test():
     payload = request.get_data()
     sig_header = request.headers.get("Stripe-Signature")
@@ -666,6 +685,7 @@ def stripe_webhook_test():
 
 @csrf.exempt
 @app.route("/stripe-webhook-live", methods=["POST"])
+@limiter.limit("100 per minute")
 def stripe_webhook_live():
     payload = request.get_data()
     sig_header = request.headers.get("Stripe-Signature")
