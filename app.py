@@ -130,6 +130,17 @@ LOGGING_CONFIG = {
 
 logging.config.dictConfig(LOGGING_CONFIG)
 logger = logging.getLogger(__name__)
+# Global dictionary to track failed login attempts by IP address
+failed_login_attempts = {}
+
+# =============================================================================
+# Environment Variable Enforcement
+# =============================================================================
+required_env_vars = ["FLASK_SECRET_KEY", "WTF_CSRF_SECRET_KEY", "CONFIG_KEY", "CUSTOM_INSTANCE_URL"]
+missing_vars = [var for var in required_env_vars if not os.environ.get(var)]
+if missing_vars:
+    logger.critical("Missing required environment variables: %s", ", ".join(missing_vars))
+    raise Exception("Missing required environment variables: " + ", ".join(missing_vars))
 
 # =============================================================================
 # Database Initialization
@@ -620,26 +631,41 @@ def login():
     if form.validate_on_submit():
         email = form.email.data.strip()
         password = form.password.data.strip()
-        logger.debug("Attempting login for email: %s", email)
+        remote_ip = request.remote_addr
+        logger.debug("Attempting login for email: %s from IP: %s", email, remote_ip)
 
         credentials = get_credentials()
         logger.debug("Retrieved credentials: %s", credentials)
         if not credentials:
+            failed_login_attempts[remote_ip] = failed_login_attempts.get(remote_ip, 0) + 1
+            attempts = failed_login_attempts[remote_ip]
+            logger.error("Login failed: credentials not found for email: %s from IP: %s (attempt %d)", email, remote_ip, attempts)
+            if attempts >= 3:
+                logger.warning("Potential brute force activity detected from IP %s: %d failed login attempts", remote_ip, attempts)
             flash("Utilizatorul nu există. Vă rugăm să completați onboarding-ul.")
-            logger.error("Login failed: Credentials not found in DB.")
             return redirect(url_for("login"))
 
         if email != credentials.get("smartbill_email"):
+            failed_login_attempts[remote_ip] = failed_login_attempts.get(remote_ip, 0) + 1
+            attempts = failed_login_attempts[remote_ip]
+            logger.error("Login failed: email mismatch. Provided: %s, expected: %s from IP: %s (attempt %d)", email, credentials.get("smartbill_email"), remote_ip, attempts)
+            if attempts >= 3:
+                logger.warning("Potential brute force activity detected from IP %s: %d failed login attempts", remote_ip, attempts)
             flash("Utilizatorul nu există. Vă rugăm să completați onboarding-ul.")
-            logger.error("Login failed: Email mismatch. Input: %s, Stored: %s", email, credentials.get("smartbill_email"))
             return redirect(url_for("login"))
 
         stored_hash = credentials.get("password_hash")
         if not stored_hash or not check_password(password, stored_hash):
+            failed_login_attempts[remote_ip] = failed_login_attempts.get(remote_ip, 0) + 1
+            attempts = failed_login_attempts[remote_ip]
+            logger.error("Login failed: incorrect password for email: %s from IP: %s (attempt %d)", email, remote_ip, attempts)
+            if attempts >= 3:
+                logger.warning("Potential brute force activity detected from IP %s: %d failed login attempts", remote_ip, attempts)
             flash("Parola incorectă!")
-            logger.error("Login failed: Incorrect password for email: %s", email)
             return redirect(url_for("login"))
 
+        # Successful login: reset failed login counter for this IP
+        failed_login_attempts.pop(remote_ip, None)
         user_record = get_user_record() or {}
         user = User(email, user_record)
         login_user(user)
@@ -647,6 +673,7 @@ def login():
         flash("Logare cu succes!")
         return redirect(url_for("dashboard"))
     return render_template("login.html", form=form)
+
 
 @app.route("/logout")
 def logout():
