@@ -1,57 +1,150 @@
-"""
-Consolidated Facturio Application
------------------------------------
-This file merges all functionalities from the original onboarding and Facturio.app files.
-It gathers and stores the following user-provided values during onboarding:
-  - SmartBill email
-  - SmartBill token
-  - Tax code ("cif")
-  - Default invoice series
-  - Stripe API keys (test and live)
-  - Stripe webhook secrets (for both test and live keys)
-
-These values are stored in a unified user record (encrypted and stored in Replit DB under the key "user_record")
-and are used in all subsequent API calls.
-"""
-
 import os
 import base64
 import logging
-import requests
+import logging.config
 import json
+import requests
 import stripe
 import bcrypt
 from cryptography.fernet import Fernet
 
-# --- New Imports for Rate Limiting ---
+# --- New Imports for Rate Limiting & Request Context ---
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
+import uuid
 
-# --- Import Flask components and config defaults ---
-from flask import Flask, render_template, request, redirect, url_for, flash, jsonify, session
+# --- Flask & Extensions ---
+from flask import Flask, render_template, request, redirect, url_for, flash, jsonify, session, g
 from flask_login import LoginManager, UserMixin, login_user, logout_user, current_user, login_required
+from flask_wtf.csrf import CSRFProtect, CSRFError
+
+# --- Local Modules ---
 from config import config_defaults  # Ensure this file exists with your default configuration
 from forms import OnboardingForm, LoginForm, ChangePasswordForm
 from replit import db  # Replit's built-in simple database
 
+# =============================================================================
+# Logging Configuration
+# =============================================================================
+
+class RedactFilter(logging.Filter):
+    """
+    Filter that redacts sensitive substrings in log messages.
+    It forces string formatting if needed to avoid issues with record arguments.
+    """
+    SENSITIVE_PATTERNS = [
+        "smartbill_token",
+        "stripe_test_api_key",
+        "stripe_live_api_key",
+        "stripe_webhook_secret",
+        "password",
+        "secret",
+        "token"
+    ]
+
+    def filter(self, record):
+        try:
+            # Force evaluation of the message if formatting arguments exist
+            if record.args:
+                message = record.msg % record.args
+                # Clear args so no further formatting is attempted downstream
+                record.args = ()
+            else:
+                message = record.msg
+            # Redact sensitive patterns
+            for pattern in self.SENSITIVE_PATTERNS:
+                message = message.replace(pattern, "[REDACTED]")
+            record.msg = message
+        except Exception as e:
+            # If any error occurs, pass the record unmodified
+            pass
+        return True
+
+class RequestContextFilter(logging.Filter):
+    """
+    Filter to add request context (e.g., request_id) to log records.
+    """
+    def filter(self, record):
+        try:
+            from flask import has_request_context, g
+            if has_request_context() and hasattr(g, 'request_id'):
+                record.request_id = g.request_id
+            else:
+                record.request_id = None
+        except Exception:
+            record.request_id = None
+        return True
+
+class JsonFormatter(logging.Formatter):
+    """
+    Formatter that outputs logs as JSON strings.
+    """
+    def format(self, record):
+        log_record = {
+            "timestamp": self.formatTime(record, self.datefmt),
+            "level": record.levelname,
+            "logger": record.name,
+            "message": record.getMessage(),
+        }
+        if hasattr(record, "request_id") and record.request_id:
+            log_record["request_id"] = record.request_id
+        return json.dumps(log_record)
+
+LOG_LEVEL = os.environ.get("LOG_LEVEL", "DEBUG")
+
+LOGGING_CONFIG = {
+    "version": 1,
+    "disable_existing_loggers": False,
+    "formatters": {
+         "json": {
+              "()": JsonFormatter,
+              "datefmt": "%Y-%m-%dT%H:%M:%S"
+         }
+    },
+    "filters": {
+         "redact": {"()": RedactFilter},
+         "request_context": {"()": RequestContextFilter}
+    },
+    "handlers": {
+         "console": {
+              "class": "logging.StreamHandler",
+              "level": LOG_LEVEL,
+              "formatter": "json",
+              "filters": ["redact", "request_context"]
+         },
+         "file": {
+              "class": "logging.handlers.RotatingFileHandler",
+              "level": LOG_LEVEL,
+              "formatter": "json",
+              "filters": ["redact", "request_context"],
+              "filename": "app.log",
+              "maxBytes": 10 * 1024 * 1024,  # 10MB
+              "backupCount": 5,
+         }
+    },
+    "root": {
+         "level": LOG_LEVEL,
+         "handlers": ["console", "file"]
+    }
+}
+
+logging.config.dictConfig(LOGGING_CONFIG)
+logger = logging.getLogger(__name__)
+
+# =============================================================================
+# Database Initialization
+# =============================================================================
 # Use an in-memory substitute if REPLIT_DB_URL isn’t defined (useful for local testing)
 if "REPLIT_DB_URL" not in os.environ:
-    logging.warning("REPLIT_DB_URL not set. Running in local mode with an in-memory DB.")
+    logger.warning("REPLIT_DB_URL not set. Running in local mode with an in-memory DB.")
     class InMemoryDB(dict):
         def get(self, key):
             return self[key] if key in self else None
     db = InMemoryDB()
 
-# Configure logging.
-logging.basicConfig(
-    level=logging.DEBUG,
-    format="%(asctime)s [%(levelname)s] %(name)s - %(message)s"
-)
-logger = logging.getLogger(__name__)
-
-# ----------------------------------------------------------------------
+# =============================================================================
 # Encryption Helper Functions
-# ----------------------------------------------------------------------
+# =============================================================================
 def get_fernet():
     config_key = os.environ.get("CONFIG_KEY")
     if not config_key:
@@ -70,9 +163,6 @@ def decrypt_data(encrypted_data):
     return json.loads(plaintext.decode("utf-8"))
 
 def set_user_record(data):
-    """
-    Encrypts the user record and stores it in Replit DB under the key "user_record".
-    """
     try:
         encrypted = encrypt_data(data)
         value = encrypted.decode("utf-8")
@@ -82,10 +172,6 @@ def set_user_record(data):
         raise
 
 def get_user_record():
-    """
-    Retrieves the encrypted user record from Replit DB, decrypts it, and returns the dictionary.
-    Returns None if the key isn’t found.
-    """
     try:
         encrypted_raw = db.get("user_record")
     except Exception as e:
@@ -104,9 +190,6 @@ def get_user_record():
         return None
 
 def set_credentials(data):
-    """
-    Encrypts the credentials and stores them in Replit DB under the key "credentials".
-    """
     try:
         logger.debug("set_credentials: Received credentials to encrypt: %s", data)
         encrypted = encrypt_data(data)
@@ -119,12 +202,6 @@ def set_credentials(data):
         raise
 
 def get_credentials():
-    """
-    Retrieves and decrypts the credentials from Replit DB.
-    Returns the credentials dictionary.
-    If decryption fails, assumes the credentials were stored as plaintext,
-    migrates them to encrypted form, and returns the credentials.
-    """
     try:
         credentials_raw = db.get("credentials")
         logger.debug("get_credentials: Retrieved raw credentials from DB: %s", credentials_raw)
@@ -143,7 +220,6 @@ def get_credentials():
         return credentials
     except Exception as e:
         logger.error("get_credentials: Error decrypting credentials: %s", e)
-        # In case credentials were mistakenly stored in plaintext, migrate them.
         try:
             credentials = json.loads(credentials_raw)
             logger.debug("get_credentials: Parsed plaintext credentials: %s", credentials)
@@ -158,28 +234,20 @@ def get_credentials():
             raise Exception("Credentials decryption failed and re-encryption failed.") from e3
         return credentials
 
-
-
-
-# ----------------------------------------------------------------------
-# Configuration and Global Constants
-# ----------------------------------------------------------------------
+# =============================================================================
+# Global Constants & Configuration
+# =============================================================================
 CUSTOM_INSTANCE_URL = os.environ.get("CUSTOM_INSTANCE_URL", "https://your-instance-url")
 
-# ----------------------------------------------------------------------
+# =============================================================================
 # Create Flask App and Setup Flask-Login
-# ----------------------------------------------------------------------
+# =============================================================================
 app = Flask(__name__)
-
-# --- Initialize Flask-Limiter for Rate Limiting and Brute-force Protection ---
 limiter = Limiter(
     key_func=get_remote_address,
     app=app,
     default_limits=[]
 )
-
-
-from flask_wtf.csrf import CSRFProtect, CSRFError
 
 csrf = CSRFProtect(app)
 
@@ -188,12 +256,9 @@ def handle_csrf_error(e):
     logger.error("CSRF error: %s", e)
     return jsonify({"status": "error", "message": "CSRF validation failed"}), 400
 
-
-
 login_manager = LoginManager(app)
-login_manager.login_view = 'login'  # Redirect unauthorized users to login
+login_manager.login_view = 'login'
 app.secret_key = os.environ.get("FLASK_SECRET_KEY", "default_secret_key")
-# Ensure CSRF protection is configured:
 app.config["WTF_CSRF_SECRET_KEY"] = os.environ.get("WTF_CSRF_SECRET_KEY")
 
 class User(UserMixin):
@@ -207,7 +272,6 @@ class User(UserMixin):
 @login_manager.user_loader
 def load_user(user_id):
     user_record = get_user_record()
-    # Use smartbill_email as unique identifier
     if user_record and user_record.get("smartbill_email") == user_id:
         return User(user_id, user_record)
     return None
@@ -216,9 +280,6 @@ def load_user(user_id):
 SMARTBILL_BASE_URL = "https://ws.smartbill.ro/SBORO/api/"
 SMARTBILL_SERIES_TYPE = "f"
 
-# ----------------------------------------------------------------------
-# Helper Functions for Passwords and Headers
-# ----------------------------------------------------------------------
 def hash_password(plain_password: str) -> str:
     salt = bcrypt.gensalt()
     hashed = bcrypt.hashpw(plain_password.encode('utf-8'), salt)
@@ -234,14 +295,19 @@ def get_smartbill_auth_header(username, token):
     logger.debug("Constructed Auth Header: %s", header)
     return header
 
-# ----------------------------------------------------------------------
-# Endpoints
-# ----------------------------------------------------------------------
+# -----------------------------------------------------------------------------
+# Request Context: assign a unique request_id to each request for context in logs.
+# -----------------------------------------------------------------------------
+@app.before_request
+def assign_request_id():
+    g.request_id = str(uuid.uuid4())
 
+# =============================================================================
+# Endpoints
+# =============================================================================
 @app.route("/", methods=["GET"])
 def index():
     user_record = get_user_record()
-    # If no user record exists, create one with default placeholder values.
     if not user_record:
         default_record = {
             "smartbill_email": None,
@@ -251,7 +317,7 @@ def index():
             "stripe_test_api_key": None,
             "stripe_live_api_key": None,
             "stripe_test_webhook": None,
-            "stripe_live_webhook": None  # This will eventually store a dict with keys like "id", "secret", "livemode"
+            "stripe_live_webhook": None
         }
         try:
             set_user_record(default_record)
@@ -262,26 +328,17 @@ def index():
             flash("Eroare la inițializarea datelor. Vă rugăm încercați din nou.")
             return "Internal server error", 500
 
-    # Onboarding is considered incomplete if there is no valid live Stripe webhook secret.
-    # Here we assume that a valid live webhook secret is stored under the key "secret" in the "stripe_live_webhook" dict.
     live_webhook = user_record.get("stripe_live_webhook")
     if not live_webhook or not live_webhook.get("secret"):
         form = OnboardingForm()
         return render_template("index.html", form=form)
 
-    # If the user record is complete, redirect the user to the login page.
     return redirect(url_for("login"))
 
-
-
-# --------------------------
-# Onboarding Endpoint
-# --------------------------
 @app.route("/onboarding", methods=["GET", "POST"])
 @limiter.limit("10 per minute")
 def onboarding():
     form = OnboardingForm()
-    # On GET, initialize the user_record if it doesn't exist.
     if request.method == "GET":
         if not db.get("user_record"):
             default_record = {
@@ -308,7 +365,6 @@ def onboarding():
         stripe_test_api_key = form.stripe_test_api_key.data.strip()
         stripe_live_api_key = form.stripe_live_api_key.data.strip()
 
-        # Double-check required fields (Flask-WTF should handle missing values, too)
         if not (smartbill_email and smartbill_token and cif and default_series and stripe_test_api_key and stripe_live_api_key):
             flash("Toate câmpurile sunt obligatorii.")
             logger.error("Onboarding failed: Missing required fields.")
@@ -340,10 +396,6 @@ def onboarding():
 
     return render_template("onboarding.html", form=form)
 
-
-# --------------------------
-# Dashboard Endpoint (Reads user record)
-# --------------------------
 @app.route("/dashboard")
 @login_required
 def dashboard():
@@ -360,9 +412,6 @@ def dashboard():
                            stripe_test_api_key=user_record.get("stripe_test_api_key", ""),
                            stripe_live_api_key=user_record.get("stripe_live_api_key", ""))
 
-# --------------------------
-# API Endpoint: Get Invoice Series from SmartBill
-# --------------------------
 @app.route("/api/get_series", methods=["POST"])
 @limiter.limit("20 per minute")
 def api_get_series():
@@ -401,9 +450,6 @@ def api_get_series():
 
     return jsonify({"status": "success", "series_list": series_list}), 200
 
-# --------------------------
-# API Endpoint: Update Default Series & Store Webhook Secrets
-# --------------------------
 @app.route("/api/set_default_series", methods=["POST"])
 @limiter.limit("20 per minute")
 def api_set_default_series():
@@ -439,9 +485,6 @@ def api_set_default_series():
 
     return jsonify({"status": "success", "user_record": existing_record}), 200
 
-# --------------------------
-# API Endpoint: Create Stripe Webhooks
-# --------------------------
 @app.route("/api/stripe_create_webhooks", methods=["POST"])
 @limiter.limit("10 per minute")
 def api_stripe_create_webhooks():
@@ -468,7 +511,6 @@ def api_stripe_create_webhooks():
     webhook_test_url = f"{CUSTOM_INSTANCE_URL.rstrip('/')}/stripe-webhook-test"
     webhook_live_url = f"{CUSTOM_INSTANCE_URL.rstrip('/')}/stripe-webhook"
 
-    # --- Create (or re-use) Test Webhook ---
     stripe.api_key = stripe_test_key
     try:
         existing_test_webhooks = stripe.WebhookEndpoint.list(limit=100)
@@ -498,7 +540,6 @@ def api_stripe_create_webhooks():
         "livemode": webhook_test.get("livemode")
     }
 
-    # --- Create (or re-use) Live Webhook ---
     stripe.api_key = stripe_live_key
     try:
         existing_live_webhooks = stripe.WebhookEndpoint.list(limit=100)
@@ -528,8 +569,6 @@ def api_stripe_create_webhooks():
         "livemode": webhook_live.get("livemode")
     }
 
-
-    # --- Update user record with new webhook info ---
     user_record["stripe_test_api_key"] = stripe_test_key
     user_record["stripe_live_api_key"] = stripe_live_key
     user_record["stripe_test_webhook"] = webhook_test_data
@@ -543,11 +582,6 @@ def api_stripe_create_webhooks():
     logger.info("Stripe webhooks created and stored successfully.")
     return jsonify({"status": "success", "message": "Stripe webhooks created successfully"}), 200
 
-
-# --------------------------
-# Authentication, Login, Logout, and Change Password Endpoints
-# (Credentials are handled separately.)
-# --------------------------
 @app.route("/login", methods=["GET", "POST"])
 @limiter.limit("5 per minute")
 def login():
@@ -563,7 +597,6 @@ def login():
             flash("Utilizatorul nu există. Vă rugăm să completați onboarding-ul.")
             logger.error("Login failed: Credentials not found in DB.")
             return redirect(url_for("login"))
-
 
         if email != credentials.get("smartbill_email"):
             flash("Utilizatorul nu există. Vă rugăm să completați onboarding-ul.")
@@ -583,7 +616,6 @@ def login():
         flash("Logare cu succes!")
         return redirect(url_for("dashboard"))
     return render_template("login.html", form=form)
-
 
 @app.route("/logout")
 def logout():
@@ -614,15 +646,13 @@ def change_password():
         set_credentials(credentials)
         logger.debug("Updated credentials after password change: %s", db.get("credentials"))
 
-
         flash("Parola a fost actualizată cu succes!")
         return redirect(url_for("dashboard"))
     return render_template("change_password.html", form=form)
 
-
-# --------------------------
+# =============================================================================
 # Facturio Integration Endpoint (Stripe Webhook)
-# --------------------------
+# =============================================================================
 from services.utils import build_payload
 from services.smartbill import create_smartbill_invoice
 from services.idempotency import is_event_processed, mark_event_processed, remove_event
@@ -737,10 +767,9 @@ def stripe_webhook_live():
 
     return jsonify(success=True), 200
 
-
-# ----------------------------------------------------------------------
+# =============================================================================
 # Run the Application
-# ----------------------------------------------------------------------
+# =============================================================================
 if __name__ == "__main__":
     port = 8080
     app.run(host="0.0.0.0", port=port)
