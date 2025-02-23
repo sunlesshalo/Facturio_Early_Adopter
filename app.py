@@ -99,6 +99,64 @@ def get_user_record():
         logger.error("Error decrypting user record: %s", e)
         return None
 
+def set_credentials(data):
+    """
+    Encrypts the credentials and stores them in Replit DB under the key "credentials".
+    """
+    try:
+        logger.debug("set_credentials: Received credentials to encrypt: %s", data)
+        encrypted = encrypt_data(data)
+        encrypted_str = encrypted.decode("utf-8")
+        logger.debug("set_credentials: Encrypted credentials: %s", encrypted_str)
+        db["credentials"] = encrypted_str
+        logger.info("set_credentials: Successfully stored encrypted credentials in DB.")
+    except Exception as e:
+        logger.error("set_credentials: Error encrypting and storing credentials: %s", e)
+        raise
+
+def get_credentials():
+    """
+    Retrieves and decrypts the credentials from Replit DB.
+    Returns the credentials dictionary.
+    If decryption fails, assumes the credentials were stored as plaintext,
+    migrates them to encrypted form, and returns the credentials.
+    """
+    try:
+        credentials_raw = db.get("credentials")
+        logger.debug("get_credentials: Retrieved raw credentials from DB: %s", credentials_raw)
+    except Exception as e:
+        logger.error("get_credentials: Exception when retrieving credentials: %s", e)
+        return None
+
+    if not credentials_raw:
+        logger.error("get_credentials: Credentials key not found in DB.")
+        return None
+
+    try:
+        encrypted_bytes = credentials_raw.encode("utf-8")
+        credentials = decrypt_data(encrypted_bytes)
+        logger.debug("get_credentials: Successfully decrypted credentials: %s", credentials)
+        return credentials
+    except Exception as e:
+        logger.error("get_credentials: Error decrypting credentials: %s", e)
+        # In case credentials were mistakenly stored in plaintext, migrate them.
+        try:
+            credentials = json.loads(credentials_raw)
+            logger.debug("get_credentials: Parsed plaintext credentials: %s", credentials)
+        except Exception as e2:
+            logger.error("get_credentials: Error parsing plaintext credentials: %s", e2)
+            raise Exception("Credentials decryption failed and plaintext parsing failed.") from e2
+        try:
+            set_credentials(credentials)
+            logger.info("get_credentials: Migrated plaintext credentials to encrypted credentials.")
+        except Exception as e3:
+            logger.error("get_credentials: Error re-encrypting credentials: %s", e3)
+            raise Exception("Credentials decryption failed and re-encryption failed.") from e3
+        return credentials
+
+
+
+
 # ----------------------------------------------------------------------
 # Configuration and Global Constants
 # ----------------------------------------------------------------------
@@ -470,14 +528,14 @@ def login():
         password = form.password.data.strip()
         logger.debug("Attempting login for email: %s", email)
 
-        credentials_raw = db.get("credentials")
-        logger.debug("Retrieved credentials from DB: %s", credentials_raw)
-        if not credentials_raw:
+        credentials = get_credentials()
+        logger.debug("Retrieved credentials: %s", credentials)
+        if not credentials:
             flash("Utilizatorul nu există. Vă rugăm să completați onboarding-ul.")
             logger.error("Login failed: Credentials not found in DB.")
             return redirect(url_for("login"))
 
-        credentials = json.loads(credentials_raw)
+        
         if email != credentials.get("smartbill_email"):
             flash("Utilizatorul nu există. Vă rugăm să completați onboarding-ul.")
             logger.error("Login failed: Email mismatch. Input: %s, Stored: %s", email, credentials.get("smartbill_email"))
@@ -509,12 +567,12 @@ def logout():
 @login_required
 def change_password():
     form = ChangePasswordForm()
-    credentials_raw = db.get("credentials")
-    if not credentials_raw:
+    credentials = get_credentials()
+    if not credentials:
         flash("Vă rugăm să vă logați.")
         logger.error("Change password failed: No credentials found in DB.")
         return redirect(url_for("login"))
-    credentials = json.loads(credentials_raw)
+
     if form.validate_on_submit():
         new_password = form.new_password.data.strip()
         if not new_password:
@@ -523,8 +581,10 @@ def change_password():
             return redirect(url_for("change_password"))
         new_hash = hash_password(new_password)
         credentials["password_hash"] = new_hash
-        db["credentials"] = json.dumps(credentials)
+        set_credentials(credentials)
         logger.debug("Updated credentials after password change: %s", db.get("credentials"))
+
+
         flash("Parola a fost actualizată cu succes!")
         return redirect(url_for("dashboard"))
     return render_template("change_password.html", form=form)
