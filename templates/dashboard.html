@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="ro">
 <head>
   <meta charset="UTF-8">
   <title>Dashboard</title>
@@ -9,72 +9,155 @@
       margin: 2em; 
       background-color: #f9f9f9;
     }
-    .info, .auth-values {
+    .info {
       margin-bottom: 1em; 
       padding: 1em; 
       background-color: #fff; 
       border: 1px solid #ddd; 
       border-radius: 5px;
     }
-    .info p, .auth-values p {
+    .info p {
       margin: 0.5em 0;
     }
-    .button {
+    .top-right-buttons {
+      position: absolute;
+      top: 20px;
+      right: 20px;
+    }
+    .top-right-buttons a {
       display: inline-block;
       padding: 0.5em 1em;
-      margin: 0.5em 0;
       background-color: #007bff;
       color: white;
       text-decoration: none;
       border-radius: 3px;
+      margin-left: 5px;
+    }
+    .top-right-buttons a:hover {
+      background-color: #0056b3;
+    }
+    .invoices {
+      margin-top: 2em;
+      background-color: #fff;
+      border: 1px solid #ddd;
+      border-radius: 5px;
+      padding: 1em;
+    }
+    .invoices h2 {
+      margin-top: 0;
+    }
+    .invoices table {
+      width: 100%;
+      border-collapse: collapse;
+    }
+    .invoices th, .invoices td {
+      padding: 8px;
+      border: 1px solid #ddd;
+      text-align: left;
+    }
+    .invoices th {
+      background-color: #f2f2f2;
+    }
+    .button {
+      display: inline-block;
+      padding: 0.5em 1em;
+      background-color: #007bff;
+      color: white;
+      text-decoration: none;
+      border-radius: 3px;
+      margin-right: 5px;
     }
     .button:hover {
       background-color: #0056b3;
     }
-    .toggle-btn {
-      padding: 0.25em 0.5em;
-      font-size: 0.9em;
-      margin-left: 0.5em;
-    }
   </style>
 </head>
 <body>
+  <div class="top-right-buttons">
+    <a href="{{ url_for('change_password') }}">Schimbă Parola</a>
+    <a href="{{ url_for('logout') }}">Deconectare</a>
+  </div>
   <h1>Dashboard</h1>
   <div class="info">
-    <p><strong>SmartBill Username:</strong> {{ smartbill_email }}</p>
+    <p><strong>Utilizator SmartBill:</strong> {{ smartbill_email }}</p>
     <p><strong>CUI:</strong> {{ company_tax_code }}</p>
-    <p><strong>Seria factura:</strong> {{ default_series }}</p>
+    <p><strong>Seria factură:</strong> {{ default_series }}</p>
   </div>
-  <div class="auth-values">
-    <h2>Authentication Details</h2>
+  <div class="invoices">
+    <h2>Ultimele 10 facturi</h2>
+    <div id="invoice-table">
+      {% if invoices %}
+      <table>
+        <thead>
+          <tr>
+            <th>Nr. eveniment</th>
+            <th>Serie factură</th>
+            <th>Valoare</th>
+            <th>Nume Client</th>
+            <th>Cod TVA</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for invoice in invoices %}
+          <tr>
+            <td>{{ invoice.event_number }}</td>
+            <td>{{ invoice.invoice_id }}</td>
+            <td>{{ invoice.value }}</td>
+            <td>{{ invoice.client_name }}</td>
+            <td>{{ invoice.client_tax_id }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      {% else %}
+        <p>Nu au fost găsite facturi.</p>
+      {% endif %}
+    </div>
     <p>
-      <strong>SmartBill Token:</strong> 
-      <span id="smartbill_token_value" style="display: none;">{{ smartbill_token }}</span>
-      <button class="toggle-btn" onclick="toggleVisibility('smartbill_token_value', this)">Show</button>
+      <a href="{{ url_for('view_all_invoices') }}" class="button">Vezi toate facturile</a>
+      <a href="#" id="refresh-btn" class="button">Reîmprospătează</a>
     </p>
-    <h3>Stripe API Key</h3>
-    <p>
-      <strong>Stripe API Key:</strong> 
-      <span id="stripe_api_key_value" style="display: none;">{{ stripe_api_key }}</span>
-      <button class="toggle-btn" onclick="toggleVisibility('stripe_api_key_value', this)">Show</button>
-    </p>
-  </div>
-  <div class="actions">
-    <p><a href="{{ url_for('change_password') }}" class="button">Change Password</a></p>
-    <p><a href="{{ url_for('logout') }}" class="button">Logout</a></p>
   </div>
   <script>
-    function toggleVisibility(elementId, btn) {
-      var el = document.getElementById(elementId);
-      var currentDisplay = window.getComputedStyle(el).display;
-      if (currentDisplay === "none") {
-        el.style.display = "inline";
-        btn.textContent = "Hide";
-      } else {
-        el.style.display = "none";
-        btn.textContent = "Show";
-      }
-    }
+    document.getElementById("refresh-btn").addEventListener("click", function(e){
+      e.preventDefault();
+      fetch("{{ url_for('api_get_invoices') }}")
+      .then(response => response.json())
+      .then(data => {
+        if(data.status === "success"){
+          let invoices = data.invoices;
+          let tableHTML = "";
+          if(invoices.length > 0){
+            tableHTML += "<table><thead><tr>";
+            tableHTML += "<th>Nr. eveniment</th>";
+            tableHTML += "<th>Serie factură</th>";
+            tableHTML += "<th>Valoare</th>";
+            tableHTML += "<th>Nume Client</th>";
+            tableHTML += "<th>Cod TVA</th>";
+            tableHTML += "</tr></thead><tbody>";
+            let lastTen = invoices.slice(-10);
+            lastTen.forEach(invoice => {
+              tableHTML += "<tr>";
+              tableHTML += "<td>" + invoice.event_number + "</td>";
+              tableHTML += "<td>" + invoice.invoice_id + "</td>";
+              tableHTML += "<td>" + invoice.value + "</td>";
+              tableHTML += "<td>" + invoice.client_name + "</td>";
+              tableHTML += "<td>" + invoice.client_tax_id + "</td>";
+              tableHTML += "</tr>";
+            });
+            tableHTML += "</tbody></table>";
+          } else {
+            tableHTML = "<p>Nu au fost găsite facturi.</p>";
+          }
+          document.getElementById("invoice-table").innerHTML = tableHTML;
+        } else {
+          alert("Eroare la reîmprospătarea facturilor: " + data.message);
+        }
+      })
+      .catch(error => {
+        alert("Eroare de reîmprospătare: " + error);
+      });
+    });
   </script>
 </body>
 </html>

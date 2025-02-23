@@ -239,6 +239,23 @@ def get_credentials():
             raise Exception("Credentials decryption failed and re-encryption failed.") from e3
         return credentials
 
+# --- NEW: Invoice Storage Helper Functions ---
+def get_invoices():
+    invoices_raw = db.get("invoices")
+    if invoices_raw:
+        try:
+            return json.loads(invoices_raw)
+        except Exception as e:
+            logger.error("Error parsing invoices JSON: %s", e)
+            return []
+    return []
+
+def add_invoice(invoice):
+    invoices = get_invoices()
+    invoices.append(invoice)
+    db["invoices"] = json.dumps(invoices)
+    logger.info("Invoice added. Total stored invoices: %d", len(invoices))
+
 # =============================================================================
 # Create Flask App and Setup Flask-Login
 # =============================================================================
@@ -262,27 +279,27 @@ def validate_json_payload(payload, required_fields):
     for field in required_fields:
         value = payload.get(field)
         if value is None:
-            errors[field] = "Field is required."
+            errors[field] = "Câmp obligatoriu."
         elif not isinstance(value, str):
-            errors[field] = "Field must be a string."
+            errors[field] = "Câmpul trebuie să fie un șir de caractere."
         elif not value.strip():
-            errors[field] = "Field cannot be empty."
+            errors[field] = "Câmpul nu poate fi gol."
         else:
             sanitized[field] = value.strip()
     if errors:
         error_messages = "; ".join([f"{k}: {v}" for k, v in errors.items()])
-        raise ValueError("Validation errors: " + error_messages)
+        raise ValueError("Erori de validare: " + error_messages)
     return sanitized
 
 @app.errorhandler(ValueError)
 def handle_value_error(error):
-    logger.error("Validation error occurred: %s", error)
+    logger.error("Eroare de validare: %s", error)
     return jsonify({"status": "error", "message": str(error)}), 400
 
 @app.errorhandler(CSRFError)
 def handle_csrf_error(e):
-    logger.error("CSRF error: %s", e)
-    return jsonify({"status": "error", "message": "CSRF validation failed"}), 400
+    logger.error("Eroare CSRF: %s", e)
+    return jsonify({"status": "error", "message": "Validarea CSRF a eșuat"}), 400
 
 login_manager = LoginManager(app)
 login_manager.login_view = 'login'
@@ -344,11 +361,11 @@ def index():
         try:
             set_user_record(default_record)
             user_record = default_record
-            logger.info("Initialized default user_record with placeholder values.")
+            logger.info("User record inițializat cu valori implicite.")
         except Exception as e:
-            logger.error("Error initializing default user record: %s", e)
+            logger.error("Eroare la inițializarea user record: %s", e)
             flash("Eroare la inițializarea datelor. Vă rugăm încercați din nou.")
-            return "Internal server error", 500
+            return "Eroare internă", 500
 
     live_webhook = user_record.get("stripe_webhook")
     if not live_webhook or not live_webhook.get("secret"):
@@ -373,9 +390,9 @@ def onboarding():
             }
             try:
                 set_user_record(default_record)
-                logger.info("Initialized user_record with default placeholder values.")
+                logger.info("User record inițializat cu valori implicite.")
             except Exception as e:
-                logger.error("Failed to initialize user_record: %s", e)
+                logger.error("Eroare la inițializarea user record: %s", e)
                 flash("Eroare la inițializarea datelor. Vă rugăm încercați din nou.")
     if form.validate_on_submit():
         smartbill_email = form.smartbill_email.data.strip()
@@ -386,7 +403,7 @@ def onboarding():
 
         if not (smartbill_email and smartbill_token and cif and default_series and stripe_api_key):
             flash("Toate câmpurile sunt obligatorii.")
-            logger.error("Onboarding failed: Missing required fields.")
+            logger.error("Onboarding eșuat: Câmpuri lipsă.")
             return redirect(url_for("onboarding"))
 
         new_record = {
@@ -399,9 +416,9 @@ def onboarding():
         }
         try:
             set_user_record(new_record)
-            logger.info("User record updated successfully with onboarding data.")
+            logger.info("User record actualizat cu succes.")
         except Exception as e:
-            logger.error("Failed to update user record: %s", e)
+            logger.error("Eroare la actualizarea user record: %s", e)
             flash("Eroare la salvarea datelor. Vă rugăm încercați din nou.")
             return redirect(url_for("onboarding"))
 
@@ -419,14 +436,24 @@ def dashboard():
     user_record = get_user_record()
     if not user_record:
         flash("Vă rugăm să vă logați și să completați onboarding-ul.")
-        logger.error("Dashboard access failed: user_record missing or failed to decrypt.")
+        logger.error("Acces Dashboard eșuat: user_record lipsă sau necriptată.")
         return redirect(url_for("login"))
+    # Preia toate facturile și selectează ultimele 10
+    all_invoices = get_invoices()
+    last_ten_invoices = all_invoices[-10:] if len(all_invoices) > 10 else all_invoices
     return render_template("dashboard.html", 
                            smartbill_email=user_record.get("smartbill_email", "N/A"),
                            company_tax_code=user_record.get("cif", "N/A"),
                            default_series=user_record.get("default_series", "N/A"),
                            smartbill_token=user_record.get("smartbill_token", ""),
-                           stripe_api_key=user_record.get("stripe_api_key", ""))
+                           stripe_api_key=user_record.get("stripe_api_key", ""),
+                           invoices=last_ten_invoices)
+
+@app.route("/invoices")
+@login_required
+def view_all_invoices():
+    all_invoices = get_invoices()
+    return render_template("all_invoices.html", invoices=all_invoices)
 
 @app.route("/api/get_series", methods=["POST"])
 @limiter.limit("20 per minute")
@@ -435,7 +462,7 @@ def api_get_series():
         data = request.get_json()
         validated_data = validate_json_payload(data, ["smartbill_email", "smartbill_token", "cif"])
     except ValueError as ve:
-        logger.error("Validation error in /api/get_series: %s", ve)
+        logger.error("Eroare validare /api/get_series: %s", ve)
         return jsonify({"status": "error", "message": str(ve)}), 400
 
     smartbill_email = validated_data["smartbill_email"]
@@ -452,21 +479,27 @@ def api_get_series():
         response.raise_for_status()
         resp_data = response.json()
     except requests.exceptions.HTTPError as errh:
-        logger.error("HTTP Error: %s", errh)
+        logger.error("Eroare HTTP: %s", errh)
         return jsonify({"status": "error", "message": f"Eroare HTTP: {errh}"}), response.status_code if response else 500
     except requests.exceptions.RequestException as err:
-        logger.error("Request Exception: %s", err)
+        logger.error("Eroare de conexiune: %s", err)
         return jsonify({"status": "error", "message": f"Eroare de conexiune: {err}"}), 500
     except ValueError as errv:
-        logger.error("JSON parsing error: %s", errv)
+        logger.error("Eroare la parsarea JSON: %s", errv)
         return jsonify({"status": "error", "message": "Răspuns invalid din partea SmartBill"}), 500
 
     series_list = resp_data.get("list", [])
     if not series_list:
-        logger.warning("No invoice series found in response.")
+        logger.warning("Nu s-au găsit serii de facturare.")
         return jsonify({"status": "error", "message": "Nu s-au găsit serii de facturare."}), 404
 
     return jsonify({"status": "success", "series_list": series_list}), 200
+
+@app.route("/api/get_invoices", methods=["GET"])
+@login_required
+def api_get_invoices():
+    invoices = get_invoices()
+    return jsonify({"status": "success", "invoices": invoices}), 200
 
 @app.route("/api/set_default_series", methods=["POST"])
 @limiter.limit("20 per minute")
@@ -475,7 +508,7 @@ def api_set_default_series():
         data = request.get_json()
         validated_data = validate_json_payload(data, ["smartbill_email", "smartbill_token", "cif", "default_series"])
     except ValueError as ve:
-        logger.error("Validation error in /api/set_default_series: %s", ve)
+        logger.error("Eroare validare /api/set_default_series: %s", ve)
         return jsonify({"status": "error", "message": str(ve)}), 400
 
     smartbill_email = validated_data["smartbill_email"]
@@ -493,10 +526,10 @@ def api_set_default_series():
 
     try:
         set_user_record(existing_record)
-        logger.info("User record updated and re-encrypted: %s", existing_record)
+        logger.info("User record actualizat și recriptat: %s", existing_record)
     except Exception as e:
-        logger.error("Failed to update encrypted user record: %s", e)
-        return jsonify({"status": "error", "message": "Failed to update user record"}), 500
+        logger.error("Eroare la actualizarea user record: %s", e)
+        return jsonify({"status": "error", "message": "Actualizarea user record a eșuat"}), 500
 
     return jsonify({"status": "success", "user_record": existing_record}), 200
 
@@ -507,19 +540,19 @@ def api_stripe_create_webhooks():
         data = request.get_json()
         validated_data = validate_json_payload(data, ["stripe_api_key"])
     except ValueError as ve:
-        logger.error("Validation error in /api/stripe_create_webhooks: %s", ve)
+        logger.error("Eroare validare /api/stripe_create_webhooks: %s", ve)
         return jsonify({"status": "error", "message": str(ve)}), 400
 
     stripe_api_key = validated_data["stripe_api_key"]
 
     user_record = get_user_record()
     if not user_record:
-        logger.error("User record not found. Cannot create Stripe webhook.")
-        return jsonify({"status": "error", "message": "Onboarding incomplete"}), 400
+        logger.error("User record nu a fost găsit. Nu se poate crea webhook-ul Stripe.")
+        return jsonify({"status": "error", "message": "Onboarding incomplet"}), 400
 
     if not os.environ.get("CUSTOM_INSTANCE_URL"):
-        logger.error("CUSTOM_INSTANCE_URL not set.")
-        return jsonify({"status": "error", "message": "CUSTOM_INSTANCE_URL not set"}), 500
+        logger.error("CUSTOM_INSTANCE_URL nu este setat.")
+        return jsonify({"status": "error", "message": "CUSTOM_INSTANCE_URL nu este setat"}), 500
 
     CUSTOM_INSTANCE_URL = os.environ.get("CUSTOM_INSTANCE_URL", "https://your-instance-url")
     webhook_url = f"{CUSTOM_INSTANCE_URL.rstrip('/')}/stripe-webhook"
@@ -528,8 +561,8 @@ def api_stripe_create_webhooks():
     try:
         existing_webhooks = stripe.WebhookEndpoint.list(limit=100)
     except Exception as e:
-        logger.error("Error listing webhooks: %s", e)
-        return jsonify({"status": "error", "message": f"Error listing webhooks: {str(e)}"}), 500
+        logger.error("Eroare la listarea webhook-urilor: %s", e)
+        return jsonify({"status": "error", "message": f"Eroare la listarea webhook-urilor: {str(e)}"}), 500
 
     webhook = None
     for wh in existing_webhooks.data:
@@ -544,8 +577,8 @@ def api_stripe_create_webhooks():
                 description="Facturio Early Adopter Program"
             )
         except Exception as e:
-            logger.error("Error creating webhook: %s", e)
-            return jsonify({"status": "error", "message": f"Error creating webhook: {str(e)}"}), 500
+            logger.error("Eroare la crearea webhook-ului: %s", e)
+            return jsonify({"status": "error", "message": f"Eroare la crearea webhook-ului: {str(e)}"}), 500
 
     webhook_data = {
         "id": webhook.get("id"),
@@ -558,11 +591,11 @@ def api_stripe_create_webhooks():
     try:
         set_user_record(user_record)
     except Exception as e:
-        logger.error("Error updating user record with webhook info: %s", e)
-        return jsonify({"status": "error", "message": "Failed to update user record with webhook info"}), 500
+        logger.error("Eroare la actualizarea user record cu informații webhook: %s", e)
+        return jsonify({"status": "error", "message": "Actualizarea user record cu informații webhook a eșuat"}), 500
 
-    logger.info("Stripe webhook created and stored successfully.")
-    return jsonify({"status": "success", "message": "Stripe webhook created successfully"}), 200
+    logger.info("Webhook-ul Stripe a fost creat și salvat cu succes.")
+    return jsonify({"status": "success", "message": "Webhook-ul Stripe a fost creat cu succes"}), 200
 
 @csrf.exempt
 @app.route("/stripe-webhook", methods=["POST"])
@@ -572,25 +605,25 @@ def stripe_webhook():
     sig_header = request.headers.get("Stripe-Signature")
     user_record = get_user_record()
     if not user_record:
-        logger.error("User record not found. Onboarding incomplete.")
-        return jsonify(success=False, error="Onboarding incomplete"), 400
+        logger.error("User record nu a fost găsit. Onboarding incomplet.")
+        return jsonify(success=False, error="Onboarding incomplet"), 400
 
     webhook_data = user_record.get("stripe_webhook", {})
     webhook_secret = webhook_data.get("secret")
     if not webhook_secret:
-        logger.error("Stripe webhook secret not found in user record.")
-        return jsonify(success=False, error="Stripe webhook secret missing"), 400
+        logger.error("Secretul webhook-ului Stripe nu a fost găsit în user record.")
+        return jsonify(success=False, error="Secret webhook lipsă"), 400
 
     try:
         event = stripe.Webhook.construct_event(payload, sig_header, webhook_secret)
     except Exception as e:
-        logger.error("Webhook signature verification failed: %s", e)
-        return jsonify(success=False, error="Invalid signature"), 400
+        logger.error("Verificarea semnăturii webhook a eșuat: %s", e)
+        return jsonify(success=False, error="Semnătură invalidă"), 400
 
     event_id = event.get("id")
     if is_event_processed(event_id):
-        logger.info("Duplicate event received: %s. Ignoring.", event_id)
-        return jsonify(success=True, message="Duplicate event"), 200
+        logger.info("Eveniment duplicat primit: %s. Se ignoră.", event_id)
+        return jsonify(success=True, message="Eveniment duplicat"), 200
 
     mark_event_processed(event_id)
     try:
@@ -605,16 +638,26 @@ def stripe_webhook():
             }
             merged_config = {**config_defaults, **dynamic_config}
             final_payload = build_payload(session_obj, merged_config)
-            logger.info("Final payload built: %s", json.dumps(final_payload, indent=2))
+            logger.info("Payload final construit: %s", json.dumps(final_payload, indent=2))
             invoice_response = create_smartbill_invoice(final_payload, merged_config)
-            logger.info("SmartBill Invoice Response: %s", json.dumps(invoice_response, indent=2))
+            logger.info("Răspuns SmartBill Invoice: %s", json.dumps(invoice_response, indent=2))
+            # Calculează valoarea din sesiune: price = amount_total / 100
+            price = session_obj.get("amount_total", 0) / 100
+            new_invoice = {
+                "event_number": 1,  # Fiind prima factură creată
+                "invoice_id": f"{invoice_response.get('series', 'N/A')}{invoice_response.get('number', 'N/A')}",  # fără separator
+                "value": price,
+                "client_name": final_payload.get("client", {}).get("name", "N/A"),
+                "client_tax_id": final_payload.get("client", {}).get("vatCode", "N/A")
+            }
+            add_invoice(new_invoice)
         else:
-            logger.info("Unhandled event type: %s", event.get("type"))
+            logger.info("Tip eveniment neprocesat: %s", event.get("type"))
     except Exception as e:
-        logger.exception("Error processing event %s: %s", event_id, e)
+        logger.exception("Eroare la procesarea evenimentului %s: %s", event_id, e)
         notify_admin(e)
         remove_event(event_id)
-        return jsonify(success=False, error="Internal server error"), 500
+        return jsonify(success=False, error="Eroare internă"), 500
 
     return jsonify(success=True), 200
 
@@ -626,25 +669,25 @@ def login():
         email = form.email.data.strip()
         password = form.password.data.strip()
         remote_ip = request.remote_addr
-        logger.debug("Attempting login for email: %s from IP: %s", email, remote_ip)
+        logger.debug("Se încearcă logarea pentru email: %s de la IP: %s", email, remote_ip)
 
         credentials = get_credentials()
-        logger.debug("Retrieved credentials: %s", credentials)
+        logger.debug("Credențiale recuperate: %s", credentials)
         if not credentials:
             failed_login_attempts[remote_ip] = failed_login_attempts.get(remote_ip, 0) + 1
             attempts = failed_login_attempts[remote_ip]
-            logger.error("Login failed: credentials not found for email: %s from IP: %s (attempt %d)", email, remote_ip, attempts)
+            logger.error("Logare eșuată: credențiale inexistente pentru email: %s de la IP: %s (încercarea %d)", email, remote_ip, attempts)
             if attempts >= 3:
-                logger.warning("Potential brute force activity detected from IP %s: %d failed login attempts", remote_ip, attempts)
+                logger.warning("Activitate posibilă de forță brută de la IP %s: %d încercări eșuate", remote_ip, attempts)
             flash("Utilizatorul nu există. Vă rugăm să completați onboarding-ul.")
             return redirect(url_for("login"))
 
         if email != credentials.get("smartbill_email"):
             failed_login_attempts[remote_ip] = failed_login_attempts.get(remote_ip, 0) + 1
             attempts = failed_login_attempts[remote_ip]
-            logger.error("Login failed: email mismatch. Provided: %s, expected: %s from IP: %s (attempt %d)", email, credentials.get("smartbill_email"), remote_ip, attempts)
+            logger.error("Logare eșuată: email incorect. Furnizat: %s, așteptat: %s de la IP: %s (încercarea %d)", email, credentials.get("smartbill_email"), remote_ip, attempts)
             if attempts >= 3:
-                logger.warning("Potential brute force activity detected from IP %s: %d failed login attempts", remote_ip, attempts)
+                logger.warning("Activitate posibilă de forță brută de la IP %s: %d încercări eșuate", remote_ip, attempts)
             flash("Utilizatorul nu există. Vă rugăm să completați onboarding-ul.")
             return redirect(url_for("login"))
 
@@ -652,10 +695,10 @@ def login():
         if not stored_hash or not check_password(password, stored_hash):
             failed_login_attempts[remote_ip] = failed_login_attempts.get(remote_ip, 0) + 1
             attempts = failed_login_attempts[remote_ip]
-            logger.error("Login failed: incorrect password for email: %s from IP: %s (attempt %d)", email, remote_ip, attempts)
+            logger.error("Logare eșuată: parolă incorectă pentru email: %s de la IP: %s (încercarea %d)", email, remote_ip, attempts)
             if attempts >= 3:
-                logger.warning("Potential brute force activity detected from IP %s: %d failed login attempts", remote_ip, attempts)
-            flash("Parola incorectă!")
+                logger.warning("Activitate posibilă de forță brută de la IP %s: %d încercări eșuate", remote_ip, attempts)
+            flash("Parolă incorectă!")
             return redirect(url_for("login"))
 
         failed_login_attempts.pop(remote_ip, None)
@@ -671,7 +714,7 @@ def login():
 def logout():
     logout_user()
     flash("Ați fost deconectat.")
-    logger.info("User logged out.")
+    logger.info("Utilizator deconectat.")
     return redirect(url_for("login"))
 
 @app.route("/change_password", methods=["GET", "POST"])
@@ -682,19 +725,19 @@ def change_password():
     credentials = get_credentials()
     if not credentials:
         flash("Vă rugăm să vă logați.")
-        logger.error("Change password failed: No credentials found in DB.")
+        logger.error("Schimbare parolă eșuată: Nu s-au găsit credențiale în DB.")
         return redirect(url_for("login"))
 
     if form.validate_on_submit():
         new_password = form.new_password.data.strip()
         if not new_password:
             flash("Vă rugăm să introduceți o parolă nouă.")
-            logger.error("Change password failed: New password not provided.")
+            logger.error("Schimbare parolă eșuată: Parolă nouă neintroduse.")
             return redirect(url_for("change_password"))
         new_hash = hash_password(new_password)
         credentials["password_hash"] = new_hash
         set_credentials(credentials)
-        logger.debug("Updated credentials after password change: %s", db.get("credentials"))
+        logger.debug("Credențiale actualizate după schimbarea parolei: %s", db.get("credentials"))
 
         flash("Parola a fost actualizată cu succes!")
         return redirect(url_for("dashboard"))
@@ -710,7 +753,7 @@ from services.email_sender import send_invoice_email
 @app.route("/stripe-webhook", methods=["POST"])
 @limiter.limit("100 per minute")
 def stripe_webhook_duplicate():
-    # This function is now replaced by the generic /stripe-webhook endpoint above.
+    # Această funcție este acum înlocuită de endpoint-ul /stripe-webhook de mai sus.
     pass
 
 if __name__ == "__main__":

@@ -18,7 +18,7 @@ def clear_user_data():
             encrypted_bytes = user_record_raw.encode("utf-8")
             user_record = json.loads(f.decrypt(encrypted_bytes).decode("utf-8"))
         except Exception as e:
-            print("Error decrypting user record. It may be corrupted or already cleared:", e)
+            print("Eroare la decriptarea user record. Poate fi corupt sau deja șters:", e)
             user_record = {}
 
         webhook = user_record.get("stripe_webhook")
@@ -28,18 +28,25 @@ def clear_user_data():
                 stripe.api_key = user_record.get("stripe_api_key", os.environ.get("STRIPE_API_KEY", ""))
                 try:
                     stripe.WebhookEndpoint.delete(webhook_id)
-                    print(f"Confirmation: Deleted Stripe webhook: {webhook_id}")
+                    print(f"Confirmare: Webhook-ul Stripe a fost șters: {webhook_id}")
                 except Exception as e:
-                    print(f"Error deleting Stripe webhook {webhook_id}: {e}")
+                    print(f"Eroare la ștergerea webhook-ului {webhook_id}: {e}")
             else:
-                print("No webhook ID found in the user record.")
+                print("Nu s-a găsit ID-ul webhook-ului în user record.")
         else:
-            print("No Stripe webhook found in the user record.")
+            print("Nu s-a găsit webhook-ul Stripe în user record.")
 
         del db["user_record"]
-        print("User record deleted from the database.")
+        print("User record șters din baza de date.")
     else:
-        print("No user record found.")
+        print("Nu s-a găsit user record.")
+
+    # Șterge și facturile înregistrate
+    if "invoices" in db:
+        del db["invoices"]
+        print("Facturile înregistrate au fost șterse din baza de date.")
+    else:
+        print("Nu s-au găsit facturi în baza de date.")
 
 if __name__ == "__main__":
     clear_user_data()
