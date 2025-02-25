@@ -24,14 +24,31 @@ from forms import OnboardingForm, LoginForm, ChangePasswordForm
 from replit import db  # Replit's built-in simple database
 
 # =============================================================================
+# Create Flask App and Setup Extensions (must come early)
+# =============================================================================
+app = Flask(__name__)
+# Load required environment variables early; if any are missing, this will raise an exception.
+required_env_vars = ["FLASK_SECRET_KEY", "WTF_CSRF_SECRET_KEY", "CONFIG_KEY", "CUSTOM_INSTANCE_URL"]
+missing_vars = [var for var in required_env_vars if not os.environ.get(var)]
+if missing_vars:
+    raise Exception("Missing required environment variables: " + ", ".join(missing_vars))
+
+app.secret_key = os.environ.get("FLASK_SECRET_KEY", "default_secret_key")
+app.config["WTF_CSRF_SECRET_KEY"] = os.environ.get("WTF_CSRF_SECRET_KEY")
+
+# Setup Rate Limiting and CSRF Protection
+limiter = Limiter(
+    key_func=get_remote_address,
+    app=app,
+    default_limits=[]
+)
+csrf = CSRFProtect(app)
+
+# =============================================================================
 # Logging Configuration
 # =============================================================================
 
 class RedactFilter(logging.Filter):
-    """
-    Filter that redacts sensitive substrings in log messages.
-    It forces string formatting if needed to avoid issues with record arguments.
-    """
     SENSITIVE_PATTERNS = [
         "smartbill_token",
         "stripe_api_key",
@@ -41,7 +58,6 @@ class RedactFilter(logging.Filter):
         "secret",
         "token"
     ]
-
     def filter(self, record):
         try:
             if record.args:
@@ -52,14 +68,11 @@ class RedactFilter(logging.Filter):
             for pattern in self.SENSITIVE_PATTERNS:
                 message = message.replace(pattern, "[REDACTED]")
             record.msg = message
-        except Exception as e:
+        except Exception:
             pass
         return True
 
 class RequestContextFilter(logging.Filter):
-    """
-    Filter to add request context (e.g., request_id) to log records.
-    """
     def filter(self, record):
         try:
             from flask import has_request_context, g
@@ -72,9 +85,6 @@ class RequestContextFilter(logging.Filter):
         return True
 
 class JsonFormatter(logging.Formatter):
-    """
-    Formatter that outputs logs as JSON strings.
-    """
     def format(self, record):
         log_record = {
             "timestamp": self.formatTime(record, self.datefmt),
@@ -87,7 +97,6 @@ class JsonFormatter(logging.Formatter):
         return json.dumps(log_record)
 
 LOG_LEVEL = os.environ.get("LOG_LEVEL", "DEBUG")
-
 LOGGING_CONFIG = {
     "version": 1,
     "disable_existing_loggers": False,
@@ -123,19 +132,9 @@ LOGGING_CONFIG = {
          "handlers": ["console", "file"]
     }
 }
-
 logging.config.dictConfig(LOGGING_CONFIG)
 logger = logging.getLogger(__name__)
 failed_login_attempts = {}
-
-# =============================================================================
-# Environment Variable Enforcement
-# =============================================================================
-required_env_vars = ["FLASK_SECRET_KEY", "WTF_CSRF_SECRET_KEY", "CONFIG_KEY", "CUSTOM_INSTANCE_URL"]
-missing_vars = [var for var in required_env_vars if not os.environ.get(var)]
-if missing_vars:
-    logger.critical("Missing required environment variables: %s", ", ".join(missing_vars))
-    raise Exception("Missing required environment variables: " + ", ".join(missing_vars))
 
 # =============================================================================
 # Database Initialization
@@ -159,8 +158,7 @@ def get_fernet():
 def encrypt_data(data_dict):
     f = get_fernet()
     plaintext = json.dumps(data_dict).encode("utf-8")
-    encrypted = f.encrypt(plaintext)
-    return encrypted
+    return f.encrypt(plaintext)
 
 def decrypt_data(encrypted_data):
     f = get_fernet()
@@ -170,8 +168,7 @@ def decrypt_data(encrypted_data):
 def set_user_record(data):
     try:
         encrypted = encrypt_data(data)
-        value = encrypted.decode("utf-8")
-        db["user_record"] = value
+        db["user_record"] = encrypted.decode("utf-8")
     except Exception as e:
         logger.error("Error encrypting and storing user record: %s", e)
         raise
@@ -182,14 +179,11 @@ def get_user_record():
     except Exception as e:
         logger.info("user_record key not found in DB (exception caught): %s", e)
         return None
-
     if not encrypted_raw:
         logger.info("user_record key not found in Replit DB. Onboarding might be incomplete.")
         return None
-
     try:
-        encrypted_bytes = encrypted_raw.encode("utf-8")
-        return decrypt_data(encrypted_bytes)
+        return decrypt_data(encrypted_raw.encode("utf-8"))
     except Exception as e:
         logger.error("Error decrypting user record: %s", e)
         return None
@@ -198,24 +192,36 @@ def set_credentials(data):
     try:
         logger.debug("set_credentials: Received credentials to encrypt: %s", data)
         encrypted = encrypt_data(data)
-        encrypted_str = encrypted.decode("utf-8")
-        logger.debug("set_credentials: Encrypted credentials: %s", encrypted_str)
-        db["credentials"] = encrypted_str
+        db["credentials"] = encrypted.decode("utf-8")
         logger.info("set_credentials: Successfully stored encrypted credentials in DB.")
     except Exception as e:
         logger.error("set_credentials: Error encrypting and storing credentials: %s", e)
         raise
 
 def get_credentials():
+    # Verify that all required environment variables are present.
+    required_env_vars = ["FLASK_SECRET_KEY", "WTF_CSRF_SECRET_KEY", "CONFIG_KEY", "CUSTOM_INSTANCE_URL"]
+    missing_vars = [var for var in required_env_vars if not os.environ.get(var)]
+    if missing_vars:
+        logger.critical("Missing required environment variables: %s", ", ".join(missing_vars))
+        raise Exception("Missing required environment variables: " + ", ".join(missing_vars))
+    else:
+        logger.debug("All required environment variables are set: %s", ", ".join(required_env_vars))
+
     try:
         credentials_raw = db.get("credentials")
-        logger.debug("get_credentials: Retrieved raw credentials from DB: %s", credentials_raw)
+        logger.debug("get_credentials: Retrieved raw credentials: %s", credentials_raw)
     except Exception as e:
-        logger.error("get_credentials: Exception when retrieving credentials: %s", e)
+        logger.exception("Exception when retrieving credentials:")
         return None
 
     if not credentials_raw:
-        logger.error("get_credentials: Credentials key not found in DB.")
+        logger.info("get_credentials: Credentials key not found in DB. Clearing any legacy data.")
+        try:
+            db.pop("credentials", None)
+            logger.info("Legacy credentials cleared from DB.")
+        except Exception as e_clear:
+            logger.exception("Error clearing legacy credentials from DB:")
         return None
 
     try:
@@ -224,105 +230,25 @@ def get_credentials():
         logger.debug("get_credentials: Successfully decrypted credentials: %s", credentials)
         return credentials
     except Exception as e:
-        logger.error("get_credentials: Error decrypting credentials: %s", e)
+        logger.exception("Error decrypting credentials:")
         try:
             credentials = json.loads(credentials_raw)
             logger.debug("get_credentials: Parsed plaintext credentials: %s", credentials)
         except Exception as e2:
-            logger.error("get_credentials: Error parsing plaintext credentials: %s", e2)
-            raise Exception("Credentials decryption failed and plaintext parsing failed.") from e2
+            logger.exception("Error parsing plaintext credentials:")
+            try:
+                db.pop("credentials", None)
+                logger.info("Legacy credentials cleared from DB after parsing failure.")
+            except Exception as e_clear:
+                logger.exception("Error clearing legacy credentials after parsing failure:")
+            return None
         try:
             set_credentials(credentials)
             logger.info("get_credentials: Migrated plaintext credentials to encrypted credentials.")
         except Exception as e3:
-            logger.error("get_credentials: Error re-encrypting credentials: %s", e3)
-            raise Exception("Credentials decryption failed and re-encryption failed.") from e3
+            logger.exception("Error re-encrypting credentials:")
+            return None
         return credentials
-
-# --- NEW: Invoice Storage Helper Functions ---
-def get_invoices():
-    invoices_raw = db.get("invoices")
-    if invoices_raw:
-        try:
-            return json.loads(invoices_raw)
-        except Exception as e:
-            logger.error("Error parsing invoices JSON: %s", e)
-            return []
-    return []
-
-def add_invoice(invoice):
-    invoices = get_invoices()
-    invoices.append(invoice)
-    db["invoices"] = json.dumps(invoices)
-    logger.info("Invoice added. Total stored invoices: %d", len(invoices))
-
-# =============================================================================
-# Create Flask App and Setup Flask-Login
-# =============================================================================
-app = Flask(__name__)
-limiter = Limiter(
-    key_func=get_remote_address,
-    app=app,
-    default_limits=[]
-)
-
-csrf = CSRFProtect(app)
-
-# =============================================================================
-# Input Validation and Error Handling Helpers
-# =============================================================================
-def validate_json_payload(payload, required_fields):
-    if not isinstance(payload, dict):
-        raise ValueError("Invalid JSON payload: expected a JSON object.")
-    sanitized = {}
-    errors = {}
-    for field in required_fields:
-        value = payload.get(field)
-        if value is None:
-            errors[field] = "Câmp obligatoriu."
-        elif not isinstance(value, str):
-            errors[field] = "Câmpul trebuie să fie un șir de caractere."
-        elif not value.strip():
-            errors[field] = "Câmpul nu poate fi gol."
-        else:
-            sanitized[field] = value.strip()
-    if errors:
-        error_messages = "; ".join([f"{k}: {v}" for k, v in errors.items()])
-        raise ValueError("Erori de validare: " + error_messages)
-    return sanitized
-
-@app.errorhandler(ValueError)
-def handle_value_error(error):
-    logger.error("Eroare de validare: %s", error)
-    return jsonify({"status": "error", "message": str(error)}), 400
-
-@app.errorhandler(CSRFError)
-def handle_csrf_error(e):
-    logger.error("Eroare CSRF: %s", e)
-    return jsonify({"status": "error", "message": "Validarea CSRF a eșuat"}), 400
-
-login_manager = LoginManager(app)
-login_manager.login_view = 'login'
-app.secret_key = os.environ.get("FLASK_SECRET_KEY", "default_secret_key")
-app.config["WTF_CSRF_SECRET_KEY"] = os.environ.get("WTF_CSRF_SECRET_KEY")
-
-class User(UserMixin):
-    def __init__(self, id, user_record):
-        self.id = id
-        self.user_record = user_record
-
-    def get_id(self):
-        return self.id
-
-@login_manager.user_loader
-def load_user(user_id):
-    user_record = get_user_record()
-    if user_record and user_record.get("smartbill_email") == user_id:
-        return User(user_id, user_record)
-    return None
-
-SMARTBILL_BASE_URL = "https://ws.smartbill.ro/SBORO/api/"
-SMARTBILL_SERIES_TYPE = "f"
 
 def hash_password(plain_password: str) -> str:
     salt = bcrypt.gensalt()
@@ -344,8 +270,48 @@ def assign_request_id():
     g.request_id = str(uuid.uuid4())
 
 # =============================================================================
+# Invoice Storage Helper Functions
+# =============================================================================
+def get_invoices():
+    invoices_raw = db.get("invoices")
+    if invoices_raw:
+        try:
+            return json.loads(invoices_raw)
+        except Exception as e:
+            logger.error("Error parsing invoices JSON: %s", e)
+            return []
+    return []
+
+def add_invoice(invoice):
+    invoices = get_invoices()
+    invoices.append(invoice)
+    db["invoices"] = json.dumps(invoices)
+    logger.info("Invoice added. Total stored invoices: %d", len(invoices))
+
+# =============================================================================
+# Flask-Login Setup
+# =============================================================================
+login_manager = LoginManager(app)
+login_manager.login_view = 'login'
+
+class User(UserMixin):
+    def __init__(self, id, user_record):
+        self.id = id
+        self.user_record = user_record
+    def get_id(self):
+        return self.id
+
+@login_manager.user_loader
+def load_user(user_id):
+    user_record = get_user_record()
+    if user_record and user_record.get("smartbill_email") == user_id:
+        return User(user_id, user_record)
+    return None
+
+# =============================================================================
 # Endpoints
 # =============================================================================
+
 @app.route("/", methods=["GET"])
 def index():
     user_record = get_user_record()
@@ -453,7 +419,6 @@ def dashboard():
         flash("Vă rugăm să vă logați și să completați onboarding-ul.")
         logger.error("Acces Dashboard eșuat: user_record lipsă sau necriptată.")
         return redirect(url_for("login"))
-    # Preia toate facturile și selectează ultimele 10
     all_invoices = get_invoices()
     last_ten_invoices = all_invoices[-10:] if len(all_invoices) > 10 else all_invoices
     return render_template("dashboard.html", 
@@ -467,8 +432,8 @@ def dashboard():
 @app.route("/invoices")
 @login_required
 def view_all_invoices():
-    all_invoices = get_invoices()
-    return render_template("all_invoices.html", invoices=all_invoices)
+    invoices = get_invoices()
+    return render_template("all_invoices.html", invoices=invoices)
 
 @app.route("/api/get_series", methods=["POST"])
 @limiter.limit("20 per minute")
@@ -656,11 +621,10 @@ def stripe_webhook():
             logger.info("Payload final construit: %s", json.dumps(final_payload, indent=2))
             invoice_response = create_smartbill_invoice(final_payload, merged_config)
             logger.info("Răspuns SmartBill Invoice: %s", json.dumps(invoice_response, indent=2))
-            # Calculează valoarea din sesiune: price = amount_total / 100
             price = session_obj.get("amount_total", 0) / 100
             new_invoice = {
-                "event_number": 1,  # Fiind prima factură creată
-                "invoice_id": f"{invoice_response.get('series', 'N/A')}{invoice_response.get('number', 'N/A')}",  # fără separator
+                "event_number": 1,
+                "invoice_id": f"{invoice_response.get('series', 'N/A')}{invoice_response.get('number', 'N/A')}",
                 "value": price,
                 "client_name": final_payload.get("client", {}).get("name", "N/A"),
                 "client_tax_id": final_payload.get("client", {}).get("vatCode", "N/A")
@@ -753,16 +717,23 @@ def change_password():
         credentials["password_hash"] = new_hash
         set_credentials(credentials)
         logger.debug("Credențiale actualizate după schimbarea parolei: %s", db.get("credentials"))
-
         flash("Parola a fost actualizată cu succes!")
         return redirect(url_for("dashboard"))
     return render_template("change_password.html", form=form)
 
+# Import additional modules from services
 from services.utils import build_payload
 from services.smartbill import create_smartbill_invoice
 from services.idempotency import is_event_processed, mark_event_processed, remove_event
 from services.notifications import notify_admin
 from services.email_sender import send_invoice_email
+
+@csrf.exempt
+@app.route("/stripe-webhook", methods=["POST"])
+@limiter.limit("100 per minute")
+def stripe_webhook_duplicate():
+    # Această funcție este acum înlocuită de endpoint-ul /stripe-webhook de mai sus.
+    pass
 
 if __name__ == "__main__":
     port = 8080
