@@ -32,6 +32,9 @@ from config import config_defaults
 
 from flask_login import LoginManager, UserMixin, login_user, logout_user, current_user, login_required
 
+# --- Import forms for Flask-WTF validation ---
+from forms import OnboardingForm, LoginForm, ChangePasswordForm
+
 # ----------------------------------------------------------------------
 # Encryption Helper Functions
 # ----------------------------------------------------------------------
@@ -150,6 +153,10 @@ app = Flask(__name__)
 login_manager = LoginManager(app)
 login_manager.login_view = 'login'
 
+# Set the secret key and enable CSRF protection
+app.secret_key = os.environ.get("FLASK_SECRET_KEY", "default_secret_key")
+app.config["WTF_CSRF_SECRET_KEY"] = os.environ.get("WTF_CSRF_SECRET_KEY")
+
 class User(UserMixin):
     def __init__(self, id, user_record):
         self.id = id
@@ -164,8 +171,6 @@ def load_user(user_id):
     if user_record and user_record.get("smartbill_email") == user_id:
         return User(user_id, user_record)
     return None
-
-app.secret_key = os.environ.get("FLASK_SECRET_KEY", "default_secret_key")
 
 # Fixed parameters for SmartBill API calls
 SMARTBILL_BASE_URL = "https://ws.smartbill.ro/SBORO/api/"
@@ -186,25 +191,27 @@ def get_smartbill_auth_header(username, token):
 # ----------------------------------------------------------------------
 @app.route("/", methods=["GET"])
 def index():
+    form = OnboardingForm()  # Instantiate the form for CSRF protection
     if not db.get("user_record"):
-        return render_template("index.html")
+        return render_template("index.html", form=form)
     if session.get("user_email"):
         return redirect(url_for("dashboard"))
-    return "Welcome to Facturio's Stripe-SmartBill Integration Service. Please log in at /login."
+    return render_template("index.html", form=form)
 
 # ----------------------------------------------------------------------
 # Onboarding Endpoint for HTML Form Submission (Handles Credentials)
 # ----------------------------------------------------------------------
 @app.route("/onboarding", methods=["GET", "POST"])
 def onboarding():
-    if request.method == "POST":
-        smartbill_email = request.form.get("smartbill_email", "").strip()
-        smartbill_token = request.form.get("smartbill_token", "").strip()
-        cif = request.form.get("cif", "").strip()  # renamed field
-        default_series = request.form.get("default_series", "").strip()
-        stripe_test_api_key = request.form.get("stripe_test_api_key", "").strip()
+    form = OnboardingForm()
+    if form.validate_on_submit():
+        smartbill_email = form.smartbill_email.data.strip()
+        smartbill_token = form.smartbill_token.data.strip()
+        cif = form.cif.data.strip()  # renamed field
+        default_series = form.default_series.data.strip()
+        stripe_test_api_key = form.stripe_api_key.data.strip()
+        # For compatibility, we assume stripe_live_api_key is passed in via request.form (if needed)
         stripe_live_api_key = request.form.get("stripe_live_api_key", "").strip()
-        password = request.form.get("password", "").strip()  # Although provided, we ignore it
 
         if not (smartbill_email and smartbill_token and cif and default_series and stripe_test_api_key and stripe_live_api_key):
             flash("Toate câmpurile sunt obligatorii.")
@@ -235,7 +242,6 @@ def onboarding():
         set_user_record(user_record)
         logger.debug("Stored encrypted user record.")
 
-        # Verify that data was stored successfully by attempting to retrieve them
         if get_user_record() is None or get_credentials() is None:
             logger.error("Failed to store user_record or credentials in Replit DB.")
             flash("Eroare la salvarea datelor. Vă rugăm încercați din nou.")
@@ -246,7 +252,7 @@ def onboarding():
         flash("Onboarding completat cu succes! Parola inițială este 'factur10'. Vă rugăm să o schimbați după logare.")
         return redirect(url_for("dashboard"))
 
-    return render_template("onboarding.html")
+    return render_template("onboarding.html", form=form)
 
 @app.route("/dashboard")
 @login_required
@@ -265,7 +271,6 @@ def dashboard():
         stripe_test_api_key=user_record.get("stripe_test_api_key", ""),
         stripe_live_api_key=user_record.get("stripe_live_api_key", "")
     )
-
 
 # ----------------------------------------------------------------------
 # API Endpoints
@@ -320,7 +325,6 @@ def api_set_default_series():
     if not (smartbill_email and smartbill_token and cif and default_series):
         return jsonify({"status": "error", "message": "Missing one or more required SmartBill fields"}), 400
 
-    # Check if credentials exist; if not, create them.
     if not get_credentials():
         initial_password = "factur10"
         password_hash = hash_password(initial_password)
@@ -331,7 +335,6 @@ def api_set_default_series():
         set_credentials(credentials)
         logger.debug("Stored encrypted credentials via API.")
 
-    # Retrieve the existing user record (if any) and update it
     existing_record = get_user_record() or {}
     existing_record.update({
         "smartbill_email": smartbill_email,
@@ -373,7 +376,6 @@ def api_stripe_create_webhooks():
 
     webhook_url = f"{CUSTOM_INSTANCE_URL.rstrip('/')}/stripe-webhook"
 
-    # Create Test Webhook
     try:
         stripe.api_key = stripe_test_key
         webhook_test = stripe.WebhookEndpoint.create(
@@ -390,7 +392,6 @@ def api_stripe_create_webhooks():
         logger.error("Error creating test webhook: %s", e)
         return jsonify({"status": "error", "message": f"Error creating test webhook: {str(e)}"}), 500
 
-    # Create Live Webhook
     try:
         stripe.api_key = stripe_live_key
         webhook_live = stripe.WebhookEndpoint.create(
@@ -420,9 +421,10 @@ def api_stripe_create_webhooks():
 # ----------------------------------------------------------------------
 @app.route("/login", methods=["GET", "POST"])
 def login():
-    if request.method == "POST":
-        email = request.form.get("email", "").strip()
-        password = request.form.get("password", "").strip()
+    form = LoginForm()
+    if form.validate_on_submit():
+        email = form.email.data.strip()
+        password = form.password.data.strip()
         logger.debug("Attempting login for email: %s", email)
 
         credentials = get_credentials()
@@ -451,7 +453,7 @@ def login():
         flash("Logare cu succes!")
         return redirect(url_for("dashboard"))
 
-    return render_template("login.html")
+    return render_template("login.html", form=form)
 
 @app.route("/logout")
 def logout():
@@ -462,14 +464,15 @@ def logout():
 
 @app.route("/change_password", methods=["GET", "POST"])
 def change_password():
+    form = ChangePasswordForm()
     credentials = get_credentials()
     logger.debug("Retrieved encrypted credentials for change_password.")
     if not credentials:
         flash("Vă rugăm să vă logați.")
         logger.error("Change password failed: No credentials found in DB.")
         return redirect(url_for("login"))
-    if request.method == "POST":
-        new_password = request.form.get("new_password", "").strip()
+    if form.validate_on_submit():
+        new_password = form.new_password.data.strip()
         if not new_password:
             flash("Vă rugăm să introduceți o parolă nouă.")
             logger.error("Change password failed: New password not provided.")
@@ -481,7 +484,7 @@ def change_password():
         flash("Parola a fost actualizată cu succes!")
         return redirect(url_for("dashboard"))
 
-    return render_template("change_password.html")
+    return render_template("change_password.html", form=form)
 
 # ----------------------------------------------------------------------
 # Facturio Integration Endpoint (Stripe Webhook)
