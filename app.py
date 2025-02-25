@@ -749,13 +749,6 @@ from services.idempotency import is_event_processed, mark_event_processed, remov
 from services.notifications import notify_admin
 from services.email_sender import send_invoice_email
 
-@csrf.exempt
-@app.route("/stripe-webhook", methods=["POST"])
-@limiter.limit("100 per minute")
-def stripe_webhook_duplicate():
-    # Această funcție este acum înlocuită de endpoint-ul /stripe-webhook de mai sus.
-    pass
-
 if __name__ == "__main__":
     port = 8080
     app.run(host="0.0.0.0", port=port)
