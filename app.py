@@ -394,6 +394,8 @@ def onboarding():
             except Exception as e:
                 logger.error("Eroare la inițializarea user record: %s", e)
                 flash("Eroare la inițializarea datelor. Vă rugăm încercați din nou.")
+                return "Eroare internă", 500
+
     if form.validate_on_submit():
         smartbill_email = form.smartbill_email.data.strip()
         smartbill_token = form.smartbill_token.data.strip()
@@ -420,6 +422,19 @@ def onboarding():
         except Exception as e:
             logger.error("Eroare la actualizarea user record: %s", e)
             flash("Eroare la salvarea datelor. Vă rugăm încercați din nou.")
+            return redirect(url_for("onboarding"))
+
+        # Set default credentials with initial password "factur10"
+        try:
+            default_credentials = {
+                "smartbill_email": smartbill_email,
+                "password_hash": hash_password("factur10")
+            }
+            set_credentials(default_credentials)
+            logger.info("Default credentials set with initial password 'factur10'.")
+        except Exception as e:
+            logger.error("Eroare la setarea credentialelor: %s", e)
+            flash("Eroare la salvarea credentialelor. Vă rugăm încercați din nou.")
             return redirect(url_for("onboarding"))
 
         user = User(smartbill_email, new_record)
