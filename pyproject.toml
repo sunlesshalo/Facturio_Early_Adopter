@@ -15,6 +15,7 @@ notifications = "^0.3.2"
 replit = "^4.1.1"
 bcrypt = "^4.2.1"
 flask-login = "^0.6.3"
+cryptography = "^44.0.1"
 
 [tool.pyright]
 # https://github.com/microsoft/pyright/blob/main/docs/configuration.md

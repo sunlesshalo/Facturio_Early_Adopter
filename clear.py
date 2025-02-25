@@ -1,52 +1,113 @@
 import os
 import json
 import stripe
+import base64
+import requests
+import logging
 from replit import db
+from cryptography.fernet import Fernet
+from config import config_defaults
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+def get_fernet():
+    config_key = os.environ.get("CONFIG_KEY")
+    if not config_key:
+        raise Exception("CONFIG_KEY environment variable is not set.")
+    return Fernet(config_key.encode())
 
 def clear_user_data():
-    # Retrieve the user record from the DB.
-    user_record_raw = db.get("user_record")
-    if user_record_raw:
-        # Load the record from JSON if it's stored as a string.
-        user_record = json.loads(user_record_raw) if isinstance(user_record_raw, str) else user_record_raw
-
-        # Delete Stripe test webhook if it exists.
-        if "stripe_test_webhook" in user_record:
-            test_webhook = user_record["stripe_test_webhook"]
-            webhook_id = test_webhook.get("id")
-            if webhook_id:
-                # Set API key to the stored test key or fallback to env variable.
-                stripe.api_key = user_record.get("stripe_test_api_key", os.environ.get("STRIPE_TEST_API_KEY", ""))
-                try:
-                    stripe.WebhookEndpoint.delete(webhook_id)
-                    print(f"Deleted Stripe test webhook: {webhook_id}")
-                except Exception as e:
-                    print(f"Error deleting Stripe test webhook {webhook_id}: {e}")
-
-        # Delete Stripe live webhook if it exists.
-        if "stripe_live_webhook" in user_record:
-            live_webhook = user_record["stripe_live_webhook"]
-            webhook_id = live_webhook.get("id")
-            if webhook_id:
-                # Set API key to the stored live key or fallback to env variable.
-                stripe.api_key = user_record.get("stripe_live_api_key", os.environ.get("STRIPE_LIVE_API_KEY", ""))
-                try:
-                    stripe.WebhookEndpoint.delete(webhook_id)
-                    print(f"Deleted Stripe live webhook: {webhook_id}")
-                except Exception as e:
-                    print(f"Error deleting Stripe live webhook {webhook_id}: {e}")
-
-        # Remove the user record from the database.
-        del db["user_record"]
-        print("User record deleted from the database.")
+    # First, clear the credentials record regardless of user record existence
+    if "credentials" in db:
+        try:
+            del db["credentials"]
+            logger.info("Credentials record deleted from database.")
+        except Exception as e:
+            logger.error("Error deleting credentials record: %s", e)
     else:
-        print("No user record found.")
+        logger.info("No credentials record found in database.")
 
-    # Optionally, clear other related keys (e.g., legacy Stripe webhook key)
-    if "stripe_webhook" in db:
-        del db["stripe_webhook"]
-        print("Stripe webhook key deleted from the database.")
+    # Then, clear invoices if present
+    if "invoices" in db:
+        invoices = db["invoices"]
+        if invoices:
+            logger.info("Found invoices in database; proceeding to delete them.")
+            # If possible, attempt deletion via SmartBill API
+            # (This part assumes a user record is available to supply needed parameters.)
+            try:
+                f = get_fernet()
+                user_record_raw = db.get("user_record")
+                if user_record_raw:
+                    user_record = json.loads(f.decrypt(user_record_raw.encode("utf-8")).decode("utf-8"))
+                    smartbill_username = user_record.get("smartbill_email")
+                    smartbill_token = user_record.get("smartbill_token")
+                    cif = user_record.get("cif")
+                    default_series = user_record.get("default_series")
+                    if not smartbill_username or not smartbill_token:
+                        logger.warning("SmartBill credentials missing in user record. Cannot delete SmartBill invoices.")
+                    elif not cif or not default_series:
+                        logger.warning("Missing 'cif' or 'default_series' in user record. Cannot delete SmartBill invoices.")
+                    else:
+                        auth_string = f"{smartbill_username}:{smartbill_token}"
+                        encoded_auth = base64.b64encode(auth_string.encode("utf-8")).decode("utf-8")
+                        headers = {
+                            "Content-Type": "application/json",
+                            "Authorization": f"Basic {encoded_auth}"
+                        }
+                        base_endpoint = "https://ws.smartbill.ro/SBORO/api/invoice"
+                        for invoice in invoices:
+                            if isinstance(invoice, dict):
+                                if "invoice_id" in invoice:
+                                    full_invoice_id = invoice["invoice_id"]
+                                    if full_invoice_id.startswith(default_series):
+                                        invoice_number = full_invoice_id[len(default_series):]
+                                    else:
+                                        invoice_number = full_invoice_id
+                                elif "number" in invoice:
+                                    invoice_number = invoice["number"]
+                                else:
+                                    invoice_number = str(invoice)
+                            else:
+                                invoice_number = str(invoice)
+                            if not invoice_number:
+                                logger.warning("Invoice without a number found; cannot build deletion URL.")
+                                continue
 
-# Example usage:
+                            delete_url = f"{base_endpoint}?cif={cif}&seriesName={default_series}&number={invoice_number}"
+                            try:
+                                response = requests.delete(delete_url, headers=headers)
+                                if response.status_code in (200, 201, 204):
+                                    logger.info("Invoice %s deleted from SmartBill.", invoice_number)
+                                else:
+                                    logger.error("Error deleting invoice %s. Status code: %s. Response: %s",
+                                                 invoice_number, response.status_code, response.text)
+                            except Exception as e:
+                                logger.error("Error sending deletion request for invoice %s: %s", invoice_number, e)
+                else:
+                    logger.info("User record not found; skipping SmartBill invoice deletion.")
+            except Exception as e:
+                logger.error("Error processing invoices deletion: %s", e)
+        else:
+            logger.info("No invoices found in db.")
+        try:
+            del db["invoices"]
+            logger.info("Invoices removed from database.")
+        except Exception as e:
+            logger.error("Error deleting invoices key: %s", e)
+    else:
+        logger.info("No invoices key found in db.")
+
+    # Finally, clear the user record if it exists
+    if "user_record" in db:
+        try:
+            del db["user_record"]
+            logger.info("User record deleted from database.")
+        except Exception as e:
+            logger.error("Error deleting user record: %s", e)
+    else:
+        logger.info("User record not found.")
+
 if __name__ == "__main__":
     clear_user_data()
