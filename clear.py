@@ -99,6 +99,24 @@ def clear_user_data():
     else:
         logger.info("No invoices key found in db.")
 
+    # Delete Stripe webhook if exists in user record
+    if "user_record" in db:
+        try:
+            user_record_raw = db.get("user_record")
+            if user_record_raw:
+                f = get_fernet()
+                user_record = json.loads(f.decrypt(user_record_raw.encode("utf-8")).decode("utf-8"))
+                stripe_api_key = user_record.get("stripe_api_key")
+                stripe_webhook = user_record.get("stripe_webhook")
+                if stripe_api_key and stripe_webhook and stripe_webhook.get("id"):
+                    stripe.api_key = stripe_api_key
+                    stripe.WebhookEndpoint.delete(stripe_webhook.get("id"))
+                    logger.info("Deleted Stripe webhook with id: %s", stripe_webhook.get("id"))
+            else:
+                logger.info("User record empty, skipping Stripe webhook deletion.")
+        except Exception as e:
+            logger.error("Error deleting Stripe webhook in clear_user_data: %s", e)
+
     # Finally, clear the user record if it exists
     if "user_record" in db:
         try:
@@ -108,6 +126,9 @@ def clear_user_data():
             logger.error("Error deleting user record: %s", e)
     else:
         logger.info("User record not found.")
+
+
+   
 
 if __name__ == "__main__":
     clear_user_data()
