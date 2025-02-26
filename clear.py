@@ -31,11 +31,15 @@ def clear_user_data():
 
     # Then, clear invoices if present
     if "invoices" in db:
-        invoices = db["invoices"]
+        invoices_raw = db["invoices"]
+        try:
+            invoices = json.loads(invoices_raw)
+        except Exception as e:
+            logger.error("Error parsing invoices JSON: %s", e)
+            invoices = []
         if invoices:
             logger.info("Found invoices in database; proceeding to delete them.")
             # If possible, attempt deletion via SmartBill API
-            # (This part assumes a user record is available to supply needed parameters.)
             try:
                 f = get_fernet()
                 user_record_raw = db.get("user_record")
@@ -57,14 +61,13 @@ def clear_user_data():
                             "Authorization": f"Basic {encoded_auth}"
                         }
                         base_endpoint = "https://ws.smartbill.ro/SBORO/api/invoice"
-                        for invoice in invoices:
+                        # Iterate over the invoices in reverse order (newest first)
+                        for invoice in reversed(invoices):
                             if isinstance(invoice, dict):
-                                if "invoice_id" in invoice:
-                                    full_invoice_id = invoice["invoice_id"]
-                                    if full_invoice_id.startswith(default_series):
-                                        invoice_number = full_invoice_id[len(default_series):]
-                                    else:
-                                        invoice_number = full_invoice_id
+                                if "event_number" in invoice:
+                                    invoice_number = invoice["event_number"]
+                                elif "invoice_id" in invoice:
+                                    invoice_number = invoice["invoice_id"]
                                 elif "number" in invoice:
                                     invoice_number = invoice["number"]
                                 else:
@@ -75,7 +78,7 @@ def clear_user_data():
                                 logger.warning("Invoice without a number found; cannot build deletion URL.")
                                 continue
 
-                            delete_url = f"{base_endpoint}?cif={cif}&seriesName={default_series}&number={invoice_number}"
+                            delete_url = f"{base_endpoint}?cif={cif}&seriesname={default_series}&number={invoice_number}"
                             try:
                                 response = requests.delete(delete_url, headers=headers)
                                 if response.status_code in (200, 201, 204):
@@ -126,9 +129,6 @@ def clear_user_data():
             logger.error("Error deleting user record: %s", e)
     else:
         logger.info("User record not found.")
-
-
-   
 
 if __name__ == "__main__":
     clear_user_data()

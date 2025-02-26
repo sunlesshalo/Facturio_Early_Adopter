@@ -1,20 +1,3 @@
-"""
-Consolidated Facturio Application
------------------------------------
-This file merges all functionalities from the original onboarding and Facturio.app files.
-It gathers and stores the following user-provided values during onboarding:
-  - SmartBill email
-  - SmartBill token
-  - Tax code ("cif")
-  - Default invoice series
-  - Stripe API key 
-  - Stripe webhook secret
-
-These values are stored in a unified user record (encrypted and stored in Replit DB under the key "user_record")
-and the credentials (encrypted and stored under the key "credentials")
-and are used in all subsequent API calls.
-"""
-
 import os
 import base64
 import logging
@@ -25,8 +8,9 @@ import bcrypt
 from cryptography.fernet import Fernet
 import re
 
-# Define regex for email validation
+# Define regex for email validation and tax id validation
 EMAIL_REGEX = r"^[\w\.-]+@[\w\.-]+\.\w+$"
+TAX_ID_REGEX = r"^(RO)?\d+$"
 
 # --- New Imports for Rate Limiting and CSRF Protection ---
 from flask_limiter import Limiter
@@ -174,6 +158,11 @@ def handle_csrf_error(e):
     logger.error("CSRF error: %s", e)
     return jsonify({"status": "error", "message": "CSRF validation failed"}), 400
 
+@app.errorhandler(ValueError)
+def handle_value_error(error):
+    logger.error("ValueError encountered: %s", error)
+    return jsonify({"status": "error", "message": str(error)}), 400
+
 login_manager = LoginManager(app)
 login_manager.login_view = 'login'
 
@@ -209,6 +198,40 @@ def get_smartbill_auth_header(username, token):
     header = {"Authorization": f"Basic {encoded_auth}"}
     logger.debug("Constructed Auth Header: %s", header)
     return header
+
+# --- NEW: Invoice Storage Helper Functions ---
+def get_invoices():
+    invoices_raw = db.get("invoices")
+    if invoices_raw:
+        try:
+            return json.loads(invoices_raw)
+        except Exception as e:
+            logger.error("Error parsing invoices JSON: %s", e)
+            return []
+    return []
+
+def add_invoice(invoice):
+    # If the invoice does not already have the expected keys, transform it.
+    if "event_number" not in invoice or "invoice_id" not in invoice:
+        user_record = get_user_record() or {}
+        transformed_invoice = {
+            "event_number": invoice.get("number", ""),
+            "invoice_id": invoice.get("series", ""),
+            "value": 0,  # Default value; update this if you have the actual value elsewhere
+            "client_name": user_record.get("smartbill_email", ""),
+            "client_tax_id": user_record.get("cif", "")
+        }
+    else:
+        transformed_invoice = invoice
+
+    invoices = get_invoices()
+    invoices.append(transformed_invoice)
+    db["invoices"] = json.dumps(invoices)
+    logger.info("Invoice added. Total stored invoices: %d", len(invoices))
+    logger.info("Invoice stored successfully in DB: %s", json.dumps(transformed_invoice, indent=2))
+
+
+
 
 # ----------------------------------------------------------------------
 # Consolidated Root Endpoint
@@ -249,9 +272,9 @@ def onboarding():
                 flash("Email invalid.")
                 logger.error("Onboarding failed: Invalid SmartBill email format.")
                 return redirect(url_for("onboarding"))
-            if not cif.isdigit():
-                flash("CIF invalid. Trebuie să conțină doar cifre.")
-                logger.error("Onboarding failed: CIF contains non-digit characters.")
+            if not re.match(TAX_ID_REGEX, cif):
+                flash("CIF invalid. Trebuie să conțină doar cifre sau să înceapă cu 'RO' urmat de cifre.")
+                logger.error("Onboarding failed: CIF does not match expected pattern.")
                 return redirect(url_for("onboarding"))
 
             # Instead of using the provided password, set the initial password to "factur10"
@@ -291,6 +314,9 @@ def onboarding():
         flash("Eroare internă. Vă rugăm încercați din nou.")
         return redirect(url_for("onboarding"))
 
+# ----------------------------------------------------------------------
+# Dashboard Endpoint (Updated)
+# ----------------------------------------------------------------------
 @app.route("/dashboard")
 @login_required
 def dashboard():
@@ -300,6 +326,8 @@ def dashboard():
             flash("Vă rugăm să vă logați și să completați onboarding-ul.")
             logger.error("Dashboard access failed: user_record missing or failed to decrypt.")
             return redirect(url_for("login"))
+        all_invoices = get_invoices()
+        last_ten_invoices = all_invoices[-10:] if len(all_invoices) > 10 else all_invoices
         return render_template(
             "dashboard.html",
             smartbill_email=user_record.get("smartbill_email", "N/A"),
@@ -307,7 +335,8 @@ def dashboard():
             default_series=user_record.get("default_series", "N/A"),
             smartbill_token=user_record.get("smartbill_token", ""),
             stripe_test_api_key=user_record.get("stripe_test_api_key", ""),
-            stripe_live_api_key=user_record.get("stripe_live_api_key", "")
+            stripe_live_api_key=user_record.get("stripe_live_api_key", ""),
+            invoices=last_ten_invoices
         )
     except Exception as e:
         logger.exception("Unexpected error in dashboard endpoint: %s", e)
@@ -315,7 +344,34 @@ def dashboard():
         return redirect(url_for("login"))
 
 # ----------------------------------------------------------------------
-# API Endpoints
+# View Invoices Endpoint (New)
+# ----------------------------------------------------------------------
+@app.route("/invoices")
+@login_required
+def view_all_invoices():
+    try:
+        all_invoices = get_invoices()
+        return render_template("all_invoices.html", invoices=all_invoices)
+    except Exception as e:
+        logger.exception("Unexpected error in view_all_invoices endpoint: %s", e)
+        flash("Eroare internă la afișarea facturilor.")
+        return redirect(url_for("dashboard"))
+
+# ----------------------------------------------------------------------
+# API Endpoint for Getting Invoices (Existing)
+# ----------------------------------------------------------------------
+@app.route("/api/get_invoices", methods=["GET"])
+@login_required
+def api_get_invoices():
+    try:
+        invoices = get_invoices()
+        return jsonify({"status": "success", "invoices": invoices}), 200
+    except Exception as e:
+        logger.exception("Unexpected error in api_get_invoices endpoint: %s", e)
+        return jsonify({"status": "error", "message": "Internal server error"}), 500
+
+# ----------------------------------------------------------------------
+# API Endpoint for SmartBill Series Retrieval (Updated CIF Validation)
 # ----------------------------------------------------------------------
 @app.route("/api/get_series", methods=["POST"])
 @limiter.limit("20 per minute")
@@ -333,8 +389,8 @@ def api_get_series():
         if not re.match(EMAIL_REGEX, smartbill_email):
             logger.error("Invalid SmartBill email format in API get_series.")
             return jsonify({"status": "error", "message": "Email invalid."}), 400
-        if not cif.isdigit():
-            logger.error("Invalid CIF in API get_series; must be digits.")
+        if not re.match(TAX_ID_REGEX, cif):
+            logger.error("Invalid CIF in API get_series; does not match expected pattern.")
             return jsonify({"status": "error", "message": "CIF invalid."}), 400
 
         series_url = f"{SMARTBILL_BASE_URL}series"
@@ -366,6 +422,9 @@ def api_get_series():
         logger.exception("Unexpected error in api_get_series endpoint: %s", e)
         return jsonify({"status": "error", "message": "Internal server error"}), 500
 
+# ----------------------------------------------------------------------
+# API Endpoint for Setting Default Series (Updated CIF Validation)
+# ----------------------------------------------------------------------
 @app.route("/api/set_default_series", methods=["POST"])
 @limiter.limit("20 per minute")
 def api_set_default_series():
@@ -384,8 +443,8 @@ def api_set_default_series():
         if not re.match(EMAIL_REGEX, smartbill_email):
             logger.error("Invalid SmartBill email format in api_set_default_series.")
             return jsonify({"status": "error", "message": "Email invalid."}), 400
-        if not cif.isdigit():
-            logger.error("Invalid CIF in api_set_default_series; must be digits.")
+        if not re.match(TAX_ID_REGEX, cif):
+            logger.error("Invalid CIF in api_set_default_series; does not match expected pattern.")
             return jsonify({"status": "error", "message": "CIF invalid."}), 400
 
         if not get_credentials():
@@ -418,6 +477,9 @@ def api_set_default_series():
         logger.exception("Unexpected error in api_set_default_series endpoint: %s", e)
         return jsonify({"status": "error", "message": "Internal server error"}), 500
 
+# ----------------------------------------------------------------------
+# API Endpoint for Stripe Webhook Creation
+# ----------------------------------------------------------------------
 @app.route("/api/stripe_create_webhooks", methods=["POST"])
 @limiter.limit("10 per minute")
 def api_stripe_create_webhooks():
@@ -492,7 +554,6 @@ def api_stripe_create_webhooks():
     except Exception as e:
         logger.exception("Unexpected error in api_stripe_create_webhooks endpoint: %s", e)
         return jsonify({"status": "error", "message": "Internal server error"}), 500
-
 
 # ----------------------------------------------------------------------
 # Authentication, Login, Logout, and Change Password Endpoints
@@ -586,6 +647,70 @@ def change_password():
         flash("Eroare internă la schimbarea parolei.")
         return redirect(url_for("change_password"))
 
+@app.route("/change_stripe_api_key", methods=["GET", "POST"])
+@login_required
+def change_stripe_api_key():
+    if request.method == "GET":
+        return render_template("change_stripe_api_key.html")
+    else:
+        new_stripe_api_key = request.form.get("stripe_api_key", "").strip()
+        if not new_stripe_api_key:
+            flash("Stripe API key is required.")
+            return redirect(url_for("change_stripe_api_key"))
+        if not (new_stripe_api_key.startswith("sk_test") or new_stripe_api_key.startswith("sk_live") or new_stripe_api_key.startswith("rk_live")):
+            flash("Stripe API key must start with sk_test, sk_live or rk_live.")
+            return redirect(url_for("change_stripe_api_key"))
+        user_record = get_user_record()
+        if not user_record:
+            flash("User record not found. Onboarding incomplete.")
+            return redirect(url_for("dashboard"))
+        previous_stripe_api_key = user_record.get("stripe_api_key")
+        previous_webhook = user_record.get("stripe_webhook")
+        webhook_url = f"{CUSTOM_INSTANCE_URL.rstrip('/')}/stripe-webhook"
+
+        # If API key is unchanged and a valid webhook exists, check its description.
+        if previous_stripe_api_key == new_stripe_api_key and previous_webhook and previous_webhook.get("secret"):
+            try:
+                stripe.api_key = new_stripe_api_key
+                retrieved_webhook = stripe.WebhookEndpoint.retrieve(previous_webhook.get("id"))
+                if retrieved_webhook and retrieved_webhook.get("description") == "Facturio Early Adopter Program":
+                    flash("Webhook already exists with the same API key. No changes made.")
+                    return redirect(url_for("dashboard"))
+            except Exception as e:
+                logger.error("Error retrieving existing webhook: %s", e)
+        # If API key has changed and a previous webhook exists, attempt deletion.
+        if previous_stripe_api_key and new_stripe_api_key != previous_stripe_api_key and previous_webhook:
+            try:
+                stripe.api_key = previous_stripe_api_key
+                stripe.WebhookEndpoint.delete(previous_webhook.get("id"))
+                logger.info("Deleted previous webhook with id: %s", previous_webhook.get("id"))
+            except Exception as e:
+                logger.error("Error deleting previous webhook: %s", e)
+        # Create a new webhook using the new API key.
+        stripe.api_key = new_stripe_api_key
+        try:
+            webhook = stripe.WebhookEndpoint.create(
+                enabled_events=["checkout.session.completed"],
+                url=webhook_url,
+                description="Facturio Early Adopter Program"
+            )
+            webhook_data = {
+                "id": webhook.get("id"),
+                "secret": webhook.get("secret"),
+                "livemode": webhook.get("livemode")
+            }
+        except Exception as e:
+            logger.error("Error creating webhook: %s", e)
+            flash("Error creating webhook: " + str(e))
+            return redirect(url_for("change_stripe_api_key"))
+        # Update the user record with the new Stripe API key and webhook data.
+        user_record["stripe_api_key"] = new_stripe_api_key
+        user_record["stripe_webhook"] = webhook_data
+        set_user_record(user_record)
+        flash("Stripe API key and webhook updated successfully!")
+        return redirect(url_for("dashboard"))
+
+
 # ----------------------------------------------------------------------
 # Facturio Integration Endpoint (Stripe Webhook)
 # ----------------------------------------------------------------------
@@ -640,6 +765,23 @@ def stripe_webhook():
                 logger.info("Final payload built in stripe_webhook: %s", json.dumps(final_payload, indent=2))
                 invoice_response = create_smartbill_invoice(final_payload, merged_config)
                 logger.info("SmartBill Invoice Response in stripe_webhook: %s", json.dumps(invoice_response, indent=2))
+                if invoice_response.get("errorText", "") == "":
+                    # Extract the invoice value from the first product's price.
+                    product_list = final_payload.get("products", [])
+                    invoice_value = 0
+                    if product_list and isinstance(product_list, list):
+                        invoice_value = product_list[0].get("price", 0)
+                    transformed_invoice = {
+                        "event_number": invoice_response.get("number", ""),
+                        "invoice_id": invoice_response.get("series", ""),
+                        "value": invoice_value,
+                        "client_name": user_record.get("smartbill_email", ""),
+                        "client_tax_id": final_payload.get("client", {}).get("vatCode", "")
+                    }
+                    add_invoice(transformed_invoice)
+                    logger.info("Invoice stored successfully in DB via add_invoice.")
+                else:
+                    logger.error("Invoice creation error, invoice not stored: %s", invoice_response)
             else:
                 logger.info("Unhandled event type in stripe_webhook: %s", event.get("type"))
         except Exception as e:
