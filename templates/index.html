@@ -58,18 +58,16 @@
   <!-- Stripe Form (hidden until SmartBill is connected) -->
   <form id="stripe-form" class="hidden">
     <p>
-      <label for="stripe_test_api_key">Test Stripe API Key:</label><br>
-      {{ form.stripe_test_api_key(size=40, id="stripe_test_api_key") }}
+      <label for="stripe_api_key">Stripe API Key:</label><br>
+      <input type="text" id="stripe_api_key" name="stripe_api_key" size="40">
     </p>
     <p>
-      <label for="stripe_live_api_key">Live Stripe API Key:</label><br>
-      {{ form.stripe_live_api_key(size=40, id="stripe_live_api_key") }}
-    </p>
-    <p>
-      <!-- Also a button of type "button" -->
+      <!-- Button of type "button" -->
       <button type="button" id="connect-stripe-btn">Conectare la Stripe</button>
     </p>
   </form>
+
+
 
   <!-- Continue Button -->
   <button type="button" id="continue-btn" class="hidden">Continuare</button>
@@ -269,16 +267,15 @@
         stripeBtn.addEventListener("click", function(e) {
           e.preventDefault();
           console.log("Stripe button clicked.");
-          const stripe_test_api_key = document.getElementById("stripe_test_api_key").value.trim();
-          const stripe_live_api_key = document.getElementById("stripe_live_api_key").value.trim();
-          if (!stripe_test_api_key || !stripe_live_api_key) {
-            flashMessage("Vă rugăm să introduceți ambele chei Stripe.");
+          const stripe_api_key = document.getElementById("stripe_api_key").value.trim();
+          if (!stripe_api_key) {
+            flashMessage("Vă rugăm să introduceți cheia Stripe.");
             return;
           }
           fetch("/api/stripe_create_webhooks", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ stripe_test_key: stripe_test_api_key, stripe_live_key: stripe_live_api_key })
+            body: JSON.stringify({ stripe_api_key: stripe_api_key })
           })
           .then(response => response.json())
           .then(data => {
@@ -299,6 +296,8 @@
       } else {
         console.warn("Stripe button not found.");
       }
+
+
 
       // Bind continue button.
       const continueBtn = document.getElementById("continue-btn");

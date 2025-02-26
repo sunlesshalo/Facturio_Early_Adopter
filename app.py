@@ -7,9 +7,8 @@ It gathers and stores the following user-provided values during onboarding:
   - SmartBill token
   - Tax code ("cif")
   - Default invoice series
-  - Stripe API keys (test and live)
-  - Stripe webhook secrets (created for both keys)
-  - App secret key
+  - Stripe API key 
+  - Stripe webhook secret
 
 These values are stored in a unified user record (encrypted and stored in Replit DB under the key "user_record")
 and the credentials (encrypted and stored under the key "credentials")
@@ -209,11 +208,8 @@ def onboarding():
         smartbill_token = form.smartbill_token.data.strip()
         cif = form.cif.data.strip()  # renamed field
         default_series = form.default_series.data.strip()
-        stripe_test_api_key = form.stripe_api_key.data.strip()
-        # For compatibility, we assume stripe_live_api_key is passed in via request.form (if needed)
-        stripe_live_api_key = request.form.get("stripe_live_api_key", "").strip()
 
-        if not (smartbill_email and smartbill_token and cif and default_series and stripe_test_api_key and stripe_live_api_key):
+        if not (smartbill_email and smartbill_token and cif and default_series):
             flash("Toate câmpurile sunt obligatorii.")
             logger.error("Onboarding failed: Missing required fields.")
             return redirect(url_for("onboarding"))
@@ -235,9 +231,7 @@ def onboarding():
             "smartbill_email": smartbill_email,
             "smartbill_token": smartbill_token,
             "cif": cif,
-            "default_series": default_series,
-            "stripe_test_api_key": stripe_test_api_key,
-            "stripe_live_api_key": stripe_live_api_key
+            "default_series": default_series
         }
         set_user_record(user_record)
         logger.debug("Stored encrypted user record.")
@@ -253,6 +247,7 @@ def onboarding():
         return redirect(url_for("dashboard"))
 
     return render_template("onboarding.html", form=form)
+
 
 @app.route("/dashboard")
 @login_required
@@ -355,19 +350,15 @@ def api_set_default_series():
 @app.route("/api/stripe_create_webhooks", methods=["POST"])
 def api_stripe_create_webhooks():
     data = request.get_json()
-    stripe_test_key = data.get("stripe_test_key", "").strip()
-    stripe_live_key = data.get("stripe_live_key", "").strip()
-    if not stripe_test_key or not stripe_live_key:
-        return jsonify({"status": "error", "message": "Both Stripe API keys are required"}), 400
-
-    if not stripe_test_key.startswith("sk_test"):
-        return jsonify({"status": "error", "message": "Test key must start with sk_test"}), 400
-    if not (stripe_live_key.startswith("sk_live") or stripe_live_key.startswith("rk_live")):
-        return jsonify({"status": "error", "message": "Live key must start with sk_live or rk_live"}), 400
+    new_stripe_api_key = data.get("stripe_api_key", "").strip()
+    if not new_stripe_api_key:
+        return jsonify({"status": "error", "message": "Stripe API key is required"}), 400
+    if not (new_stripe_api_key.startswith("sk_test") or new_stripe_api_key.startswith("sk_live") or new_stripe_api_key.startswith("rk_live")):
+        return jsonify({"status": "error", "message": "Stripe API key must start with sk_test, sk_live or rk_live"}), 400
 
     user_record = get_user_record()
     if not user_record:
-        logger.error("User record not found. Cannot create Stripe webhooks.")
+        logger.error("User record not found. Cannot create Stripe webhook.")
         return jsonify({"status": "error", "message": "Onboarding incomplete"}), 400
 
     if not CUSTOM_INSTANCE_URL:
@@ -376,45 +367,47 @@ def api_stripe_create_webhooks():
 
     webhook_url = f"{CUSTOM_INSTANCE_URL.rstrip('/')}/stripe-webhook"
 
+    # If there is an existing webhook, delete it using the previous Stripe API key
+    previous_stripe_api_key = user_record.get("stripe_api_key")
+    previous_webhook = user_record.get("stripe_webhook")
+    if previous_stripe_api_key and previous_webhook:
+        try:
+            stripe.api_key = previous_stripe_api_key
+            webhook_id = previous_webhook.get("id")
+            if webhook_id:
+                stripe.WebhookEndpoint.delete(webhook_id)
+                logger.info("Deleted previous webhook with id: %s", webhook_id)
+        except Exception as e:
+            logger.error("Error deleting previous webhook: %s", e)
+            # Proceeding to create a new webhook even if deletion fails
+
+    # Create a new webhook using the new Stripe API key
+    stripe.api_key = new_stripe_api_key
     try:
-        stripe.api_key = stripe_test_key
-        webhook_test = stripe.WebhookEndpoint.create(
+        webhook = stripe.WebhookEndpoint.create(
             enabled_events=["checkout.session.completed"],
             url=webhook_url,
-            description="Facturio Early Adopter Program (Test)"
+            description="Facturio Early Adopter Program"
         )
-        webhook_test_data = {
-            "id": webhook_test.get("id"),
-            "secret": webhook_test.get("secret"),
-            "livemode": webhook_test.get("livemode")
+        webhook_data = {
+            "id": webhook.get("id"),
+            "secret": webhook.get("secret"),
+            "livemode": webhook.get("livemode")
         }
     except Exception as e:
-        logger.error("Error creating test webhook: %s", e)
-        return jsonify({"status": "error", "message": f"Error creating test webhook: {str(e)}"}), 500
+        logger.error("Error creating webhook: %s", e)
+        return jsonify({"status": "error", "message": f"Error creating webhook: {str(e)}"}), 500
 
-    try:
-        stripe.api_key = stripe_live_key
-        webhook_live = stripe.WebhookEndpoint.create(
-            enabled_events=["checkout.session.completed"],
-            url=webhook_url,
-            description="Facturio Early Adopter Program (Live)"
-        )
-        webhook_live_data = {
-            "id": webhook_live.get("id"),
-            "secret": webhook_live.get("secret"),
-            "livemode": webhook_live.get("livemode")
-        }
-    except Exception as e:
-        logger.error("Error creating live webhook: %s", e)
-        return jsonify({"status": "error", "message": f"Error creating live webhook: {str(e)}"}), 500
-
-    user_record["stripe_test_api_key"] = stripe_test_key
-    user_record["stripe_live_api_key"] = stripe_live_key
-    user_record["stripe_test_webhook"] = webhook_test_data
-    user_record["stripe_live_webhook"] = webhook_live_data
+    # Update the user record with the new Stripe API key and new webhook data
+    user_record["stripe_api_key"] = new_stripe_api_key
+    user_record["stripe_webhook"] = webhook_data
     set_user_record(user_record)
-    logger.info("Stripe webhooks created and stored successfully.")
-    return jsonify({"status": "success", "message": "Stripe webhooks created successfully"}), 200
+    logger.info("Stripe webhook created and stored successfully with new Stripe key.")
+    return jsonify({"status": "success", "message": "Stripe webhook updated successfully"}), 200
+
+
+
+
 
 # ----------------------------------------------------------------------
 # Authentication, Login, Logout, and Change Password Endpoints
@@ -505,26 +498,16 @@ def stripe_webhook():
         logger.error("User record not found. Onboarding incomplete.")
         return jsonify(success=False, error="Onboarding incomplete"), 400
 
-    test_webhook_data = user_record.get("stripe_test_webhook", {})
-    live_webhook_data = user_record.get("stripe_live_webhook", {})
-    test_webhook_secret = test_webhook_data.get("secret")
-    live_webhook_secret = live_webhook_data.get("secret")
-
-    if not (test_webhook_secret or live_webhook_secret):
-        logger.error("No Stripe webhook secrets found in user record.")
+    webhook_data = user_record.get("stripe_webhook")
+    if not webhook_data or not webhook_data.get("secret"):
+        logger.error("No Stripe webhook secret found in user record.")
         return jsonify(success=False, error="Stripe webhook secret missing"), 400
 
-    event = None
-    for secret in [test_webhook_secret, live_webhook_secret]:
-        if secret:
-            try:
-                event = stripe.Webhook.construct_event(payload, sig_header, secret)
-                break
-            except Exception as e:
-                continue
-
-    if not event:
-        logger.error("Webhook signature verification failed with both secrets.")
+    webhook_secret = webhook_data.get("secret")
+    try:
+        event = stripe.Webhook.construct_event(payload, sig_header, webhook_secret)
+    except Exception as e:
+        logger.error("Webhook signature verification failed: %s", e)
         return jsonify(success=False, error="Invalid signature"), 400
 
     event_id = event.get("id")
@@ -557,6 +540,8 @@ def stripe_webhook():
         return jsonify(success=False, error="Internal server error"), 500
 
     return jsonify(success=True), 200
+
+
 
 # ----------------------------------------------------------------------
 # Run the Application

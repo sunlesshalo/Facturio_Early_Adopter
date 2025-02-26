@@ -56,13 +56,14 @@
       <span id="smartbill_token_value" style="display: none;">{{ smartbill_token }}</span>
       <button class="toggle-btn" onclick="toggleVisibility('smartbill_token_value', this)">Show</button>
     </p>
-    <h3>Stripe API Keys</h3>
+    <h3>Stripe API Key</h3>
     <p>
-      <strong>Test Stripe API Key:</strong> 
-      <span id="stripe_test_api_key_value" style="display: none;">{{ stripe_test_api_key }}</span>
-      <button class="toggle-btn" onclick="toggleVisibility('stripe_test_api_key_value', this)">Show</button>
+      <strong>Stripe API Key:</strong> 
+      <span id="stripe_api_key_value" style="display: none;">{{ stripe_api_key }}</span>
+      <button class="toggle-btn" onclick="toggleVisibility('stripe_api_key_value', this)">Show</button>
+      <button class="toggle-btn" id="change-stripe-key-btn">Change</button>
     </p>
-    <p>
+
       <strong>Live Stripe API Key:</strong> 
       <span id="stripe_live_api_key_value" style="display: none;">{{ stripe_live_api_key }}</span>
       <button class="toggle-btn" onclick="toggleVisibility('stripe_live_api_key_value', this)">Show</button>
@@ -87,6 +88,86 @@
         btn.textContent = "Show";
       }
     }
+    // Bind Change Stripe Key button to open modal.
+    const changeStripeKeyBtn = document.getElementById("change-stripe-key-btn");
+    if (changeStripeKeyBtn) {
+      changeStripeKeyBtn.addEventListener("click", function() {
+        const stripeKeyModal = document.getElementById("stripe-key-modal");
+        if (stripeKeyModal) {
+          stripeKeyModal.style.display = "flex";
+        }
+      });
+    } else {
+      console.warn("Change Stripe Key button not found.");
+    }
+
+    // Bind modal confirm button.
+    const modalChangeConfirmBtn = document.getElementById("modal-change-confirm-btn");
+    if (modalChangeConfirmBtn) {
+      modalChangeConfirmBtn.addEventListener("click", function() {
+        const newStripeKey = document.getElementById("new_stripe_api_key").value.trim();
+        if (!newStripeKey) {
+          alert("Please enter a new Stripe API key.");
+          return;
+        }
+        fetch("/api/stripe_create_webhooks", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ stripe_api_key: newStripeKey })
+        })
+        .then(response => response.json())
+        .then(data => {
+          console.log("Response from /api/stripe_create_webhooks:", data);
+          if (data.status === "success") {
+            flashMessage("Stripe API key updated successfully! " + data.message);
+            // Optionally update the displayed key (if visible)
+            const stripeKeyValue = document.getElementById("stripe_api_key_value");
+            if (stripeKeyValue) {
+              stripeKeyValue.textContent = newStripeKey;
+              stripeKeyValue.style.display = "none";
+            }
+            // Close the modal
+            document.getElementById("stripe-key-modal").style.display = "none";
+          } else {
+            flashMessage("Error updating Stripe API key: " + data.message);
+          }
+        })
+        .catch(error => {
+          console.error("Error in updating Stripe key fetch:", error);
+          flashMessage("Connection error while updating Stripe API key.");
+        });
+      });
+    } else {
+      console.warn("Modal confirm button not found.");
+    }
+
+    // Bind modal cancel button.
+    const modalChangeCancelBtn = document.getElementById("modal-change-cancel-btn");
+    if (modalChangeCancelBtn) {
+      modalChangeCancelBtn.addEventListener("click", function() {
+        document.getElementById("stripe-key-modal").style.display = "none";
+      });
+    } else {
+      console.warn("Modal cancel button not found.");
+    }
+
+
   </script>
+  <!-- Modal for changing Stripe API Key -->
+  <div id="stripe-key-modal" class="modal">
+    <div class="modal-content">
+      <h2>Change Stripe API Key</h2>
+      <p>
+        <label for="new_stripe_api_key">New Stripe API Key:</label><br>
+        <input type="text" id="new_stripe_api_key" name="new_stripe_api_key" size="40">
+      </p>
+      <p>
+        <button type="button" id="modal-change-confirm-btn">Save</button>
+        <button type="button" id="modal-change-cancel-btn">Cancel</button>
+      </p>
+    </div>
+  </div>
+
+
 </body>
 </html>
