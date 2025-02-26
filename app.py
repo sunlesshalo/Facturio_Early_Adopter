@@ -24,6 +24,11 @@ import stripe
 import bcrypt
 from cryptography.fernet import Fernet
 
+# --- New Imports for Rate Limiting and CSRF Protection ---
+from flask_limiter import Limiter
+from flask_limiter.util import get_remote_address
+from flask_wtf.csrf import CSRFProtect, CSRFError
+
 from flask import Flask, render_template, request, redirect, url_for, flash, jsonify, session
 from replit import db  # Replit's built-in simple database
 
@@ -149,6 +154,22 @@ logger = logging.getLogger(__name__)
 # Create Flask App and Setup Flask-Login
 # ----------------------------------------------------------------------
 app = Flask(__name__)
+
+# --- Initialize Flask-Limiter for Rate Limiting and Brute-force Protection ---
+limiter = Limiter(
+    key_func=get_remote_address,
+    app=app,
+    default_limits=[]
+)
+
+# --- Initialize CSRF Protection with custom error handling ---
+csrf = CSRFProtect(app)
+
+@app.errorhandler(CSRFError)
+def handle_csrf_error(e):
+    logger.error("CSRF error: %s", e)
+    return jsonify({"status": "error", "message": "CSRF validation failed"}), 400
+
 login_manager = LoginManager(app)
 login_manager.login_view = 'login'
 
@@ -201,6 +222,7 @@ def index():
 # Onboarding Endpoint for HTML Form Submission (Handles Credentials)
 # ----------------------------------------------------------------------
 @app.route("/onboarding", methods=["GET", "POST"])
+@limiter.limit("10 per minute")
 def onboarding():
     form = OnboardingForm()
     if form.validate_on_submit():
@@ -248,7 +270,6 @@ def onboarding():
 
     return render_template("onboarding.html", form=form)
 
-
 @app.route("/dashboard")
 @login_required
 def dashboard():
@@ -271,6 +292,7 @@ def dashboard():
 # API Endpoints
 # ----------------------------------------------------------------------
 @app.route("/api/get_series", methods=["POST"])
+@limiter.limit("20 per minute")
 def api_get_series():
     data = request.get_json()
     smartbill_email = data.get("smartbill_email", "").strip()
@@ -308,6 +330,7 @@ def api_get_series():
     return jsonify({"status": "success", "series_list": series_list}), 200
 
 @app.route("/api/set_default_series", methods=["POST"])
+@limiter.limit("20 per minute")
 def api_set_default_series():
     data = request.get_json()
     smartbill_email = data.get("smartbill_email", "").strip()
@@ -348,6 +371,7 @@ def api_set_default_series():
     return jsonify({"status": "success", "user_record": existing_record}), 200
 
 @app.route("/api/stripe_create_webhooks", methods=["POST"])
+@limiter.limit("10 per minute")
 def api_stripe_create_webhooks():
     data = request.get_json()
     new_stripe_api_key = data.get("stripe_api_key", "").strip()
@@ -405,14 +429,11 @@ def api_stripe_create_webhooks():
     logger.info("Stripe webhook created and stored successfully with new Stripe key.")
     return jsonify({"status": "success", "message": "Stripe webhook updated successfully"}), 200
 
-
-
-
-
 # ----------------------------------------------------------------------
 # Authentication, Login, Logout, and Change Password Endpoints
 # ----------------------------------------------------------------------
 @app.route("/login", methods=["GET", "POST"])
+@limiter.limit("5 per minute")
 def login():
     form = LoginForm()
     if form.validate_on_submit():
@@ -456,6 +477,8 @@ def logout():
     return redirect(url_for("login"))
 
 @app.route("/change_password", methods=["GET", "POST"])
+@login_required
+@limiter.limit("5 per minute")
 def change_password():
     form = ChangePasswordForm()
     credentials = get_credentials()
@@ -489,6 +512,8 @@ from services.notifications import notify_admin
 from services.email_sender import send_invoice_email
 
 @app.route("/stripe-webhook", methods=["POST"])
+@csrf.exempt
+@limiter.limit("100 per minute")
 def stripe_webhook():
     payload = request.get_data()
     sig_header = request.headers.get("Stripe-Signature")
@@ -503,9 +528,8 @@ def stripe_webhook():
         logger.error("No Stripe webhook secret found in user record.")
         return jsonify(success=False, error="Stripe webhook secret missing"), 400
 
-    webhook_secret = webhook_data.get("secret")
     try:
-        event = stripe.Webhook.construct_event(payload, sig_header, webhook_secret)
+        event = stripe.Webhook.construct_event(payload, sig_header, webhook_data.get("secret"))
     except Exception as e:
         logger.error("Webhook signature verification failed: %s", e)
         return jsonify(success=False, error="Invalid signature"), 400
@@ -540,8 +564,6 @@ def stripe_webhook():
         return jsonify(success=False, error="Internal server error"), 500
 
     return jsonify(success=True), 200
-
-
 
 # ----------------------------------------------------------------------
 # Run the Application

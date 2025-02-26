@@ -67,8 +67,6 @@
     </p>
   </form>
 
-
-
   <!-- Continue Button -->
   <button type="button" id="continue-btn" class="hidden">Continuare</button>
 
@@ -90,6 +88,12 @@
   <script>
     document.addEventListener("DOMContentLoaded", function() {
       console.log("DOM fully loaded.");
+
+      // Utility function to get the CSRF token from the hidden input
+      function getCSRFToken() {
+        const tokenInput = document.querySelector("input[name='csrf_token']");
+        return tokenInput ? tokenInput.value : "";
+      }
 
       // Utility function to show flash messages.
       function flashMessage(msg) {
@@ -152,7 +156,10 @@
           // AJAX call to get invoice series.
           fetch("/api/get_series", {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
+            headers: { 
+              "Content-Type": "application/json",
+              "X-CSRFToken": getCSRFToken()
+            },
             body: JSON.stringify({ smartbill_email, smartbill_token, cif })
           })
           .then(response => response.json())
@@ -169,7 +176,10 @@
               // Update user record with default series.
               fetch("/api/set_default_series", {
                 method: "POST",
-                headers: { "Content-Type": "application/json" },
+                headers: { 
+                  "Content-Type": "application/json",
+                  "X-CSRFToken": getCSRFToken()
+                },
                 body: JSON.stringify({ smartbill_email, smartbill_token, default_series: seriesName, cif })
               })
               .then(res => res.json())
@@ -221,7 +231,10 @@
           const cif = document.getElementById("cif").value.trim();
           fetch("/api/set_default_series", {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
+            headers: { 
+              "Content-Type": "application/json",
+              "X-CSRFToken": getCSRFToken()
+            },
             body: JSON.stringify({ smartbill_email, smartbill_token, default_series, cif })
           })
           .then(res => res.json())
@@ -274,7 +287,10 @@
           }
           fetch("/api/stripe_create_webhooks", {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
+            headers: { 
+              "Content-Type": "application/json",
+              "X-CSRFToken": getCSRFToken()
+            },
             body: JSON.stringify({ stripe_api_key: stripe_api_key })
           })
           .then(response => response.json())
@@ -296,8 +312,6 @@
       } else {
         console.warn("Stripe button not found.");
       }
-
-
 
       // Bind continue button.
       const continueBtn = document.getElementById("continue-btn");
